@@ -8,13 +8,15 @@ use std::rc::Rc;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
+use crate::ir_gen::QueryDef;
+
 
 #[derive(Clone, Debug)]
 pub enum Value {
     Nil,
     All,
     Atom(usize),
-    Int(u64),
+    Int(i64),
     Str(String),
     Struct(Rc<Struct>),
     Ref(ValueCell)
@@ -61,17 +63,20 @@ impl fmt::Debug for ValueCell {
     }
 }
 
+#[derive(Debug)]
 pub enum Intrinsic {
     PrintRegister(u32),
     PrintVariable(u32)
 }
 
+#[derive(Debug)]
 pub enum Instruction {
     Allocate(u32),
     Return,
     LoadReg(u32, u32),
     StoreRegVariable(u32, u32),
     StoreRegConstant(u32, Value),
+    UnifyRegisterWithConstant(u32, Value),
     UnifyVariable(u32, u32),
     UnifyConstant(u32, Value),
     UnifyRegister(u32, u32),
@@ -146,6 +151,17 @@ pub struct Rule {
     code: RefCell<Vec<CodeBlock>>
 }
 
+impl fmt::Debug for Rule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Rule")
+        .field("functor", &self.functor)
+        .field("arity", &self.arity)
+        .finish()
+    }
+}
+
+
+#[derive(Debug)]
 pub struct RuleInfo {
     functor: String,
     arity: u32
@@ -249,6 +265,21 @@ impl PrologVM {
 
     }
 
+    pub fn execute_query(&mut self, query: QueryDef) {
+        let query_rule = Rule {
+            functor: 0,
+            arity: 0,
+            code: RefCell::from(vec![CodeBlock::from(query.code)])
+        }; 
+
+        self.execute(Rc::from(query_rule));
+
+        for (idx, var) in query.variables.iter().enumerate() {
+            let value = self.read_local_variable(idx as u32);
+            println!("{}: {:?}", var, value.get_value());
+        }
+    }
+
     pub fn execute(&mut self, rule: Rc<Rule>) {
         let mut pc : usize = 0;
         let mut code = rule.code.borrow()[0].clone();
@@ -325,6 +356,17 @@ impl PrologVM {
                 }
                 Instruction::StoreRegConstant(register, value) => {
                     self.registers[*register as usize] = value.clone();
+                }
+                Instruction::UnifyRegisterWithConstant(reg, constant) => {
+                    let val = self.read_register(*reg);
+                    let res = self.unify(
+                        val,
+                        constant.clone()
+                    );
+                    if !res {
+                        backtrack = true;
+                        //panic!("Can not unify");
+                    }
                 }
                 Instruction::UnifyRegister(var, reg) => {
                     let val = self.read_register(*reg);

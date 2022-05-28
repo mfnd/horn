@@ -1,0 +1,21 @@
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+
+number = { "0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* }
+atom = { ASCII_ALPHA_LOWER ~ ASCII_ALPHANUMERIC* }
+variable = { ASCII_ALPHA_UPPER ~ ASCII_ALPHANUMERIC*}
+
+structure = { atom ~ "(" ~ terms ~ ")" }
+
+term = {
+    structure | number | atom | variable
+}
+
+terms = _{
+    term ~ ( "," ~ term)*
+}
+
+fact = { term ~ "." }
+rule = { term ~ ":-" ~ terms ~ "." }
+query = { terms ~ "." }
+
+file = { SOI ~ (fact | rule)* ~ EOI }
