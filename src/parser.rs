@@ -1,4 +1,4 @@
-use pest::iterators::Pair;
+use pest::{iterators::Pair, Parser};
 
 #[derive(Parser)]
 #[grammar = "prolog.pest"]
@@ -18,6 +18,16 @@ pub enum CFGNode {
 
 impl CFGNode {
 
+    pub fn parse_file(file_content: &str) -> Option<Self> {
+        let file = PrologParser::parse(PrologRule::file, file_content).unwrap().next().unwrap();
+        Self::from(file)
+    }
+
+    pub fn parse_query(query_str: &str) -> Option<Self> {
+        let query = PrologParser::parse(PrologRule::query, query_str).unwrap().next().unwrap();
+        Self::from(query)
+    }
+
     pub fn from(pair: Pair<Rule>) -> Option<Self> {
         let node= match pair.as_rule() {
             Rule::file => {
@@ -36,6 +46,10 @@ impl CFGNode {
                 let val: i64 = pair.as_str().parse().unwrap();
                 CFGNode::Term(Term::Number(val))
             },
+            Rule::string => {
+                let val: String = String::from(pair.into_inner().next()?.as_str());
+                CFGNode::Term(Term::String(val))
+            }
             Rule::atom => {
                 let name = String::from(pair.as_str());
                 CFGNode::Term(Term::Atom(name))
@@ -116,6 +130,7 @@ impl CFGNode {
 pub enum Term {
     Number(i64),
     Atom(String),
+    String(String),
     Variable(String),
     Structure(Structure)
 }

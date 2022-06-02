@@ -50,6 +50,9 @@ impl IRGen {
                 Term::Number(num) => code.push(
                     Instruction::UnifyRegisterWithConstant(idx as u32, Value::Int(*num))
                 ),
+                Term::String(s) => code.push(
+                    Instruction::UnifyRegisterWithConstant(idx as u32, Value::Str(s.clone()))
+                ),
                 Term::Atom(atom) => todo!(),
                 Term::Variable(variable) => {
                     if let Some(var_idx) = variables.iter().position(|&v| v == variable) {
@@ -87,6 +90,9 @@ impl IRGen {
                             Term::Number(num) => code.push(
                                 Instruction::StoreRegConstant(idx as u32, Value::Int(*num))
                             ),
+                            Term::String(s) => code.push(
+                                Instruction::StoreRegConstant(idx as u32, Value::Str(s.clone()))
+                            ),
                             Term::Atom(atom) => todo!(),
                             Term::Variable(variable) => {
                                 if let Some(var_idx) = variables.iter().position(|v| v == variable) {
@@ -109,7 +115,8 @@ impl IRGen {
                 },
                 Term::Number(_) => todo!(),
                 Term::Atom(_) => todo!(),
-                Term::Variable(_) => todo!()
+                Term::Variable(_) => todo!(),
+                _ => todo!()
             }
         }
 

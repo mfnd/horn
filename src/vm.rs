@@ -7,8 +7,12 @@ use std::ops::Index;
 use std::rc::Rc;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
+use std::slice::SliceIndex;
 
-use crate::ir_gen::QueryDef;
+use crate::builtins::{BuiltIn, BUILTINS, get_builtin};
+use crate::debugln;
+use crate::ir_gen::{QueryDef, IRGen};
+use crate::parser::CFGNode;
 
 
 #[derive(Clone, Debug)]
@@ -265,7 +269,20 @@ impl PrologVM {
 
     }
 
+    pub fn execute_query_str(&mut self, query_str: &str) {
+        if let Some(CFGNode::Query(terms)) = CFGNode::parse_query(query_str) {
+            let ir_gen = IRGen {};
+            let query_rule = ir_gen.generate_query(terms);
+            debugln!("{:?}", query_rule);
+            self.execute_query(query_rule);
+        } else {
+            panic!("Could not query");
+        }
+    }
+
     pub fn execute_query(&mut self, query: QueryDef) {
+        self.call_stack.clear();
+        self.choice_stack.clear();
         let query_rule = Rule {
             functor: 0,
             arity: 0,
@@ -292,10 +309,10 @@ impl PrologVM {
                     if let Some(choice_frame) = last_choice {
                         let alternates = choice_frame.rule.code.borrow();
                         if choice_frame.choice_idx + 1 < alternates.len() {
-                            println!("Trying alternative: {}", choice_frame.choice_idx + 1);
+                            debugln!("Trying alternative: {}", choice_frame.choice_idx + 1);
                             while self.trail.len() > choice_frame.trail_top {
                                 if let Some(change) = self.trail.pop() {
-                                    println!("Reverting {:?}", change);
+                                    debugln!("Reverting {:?}", change);
                                     change.put(Value::Nil);
                                 }
                             }
@@ -307,7 +324,7 @@ impl PrologVM {
                             choice_frame.choice_idx += 1;
                             code = alternates[choice_frame.choice_idx].clone();
                             for (idx, val) in choice_frame.args.iter().enumerate() {
-                                println!("Reverting register {} to {:?}", idx, val);
+                                debugln!("Reverting register {} to {:?}", idx, val);
                                 self.registers[idx] = val.clone();
                             }
                             pc = 0;
@@ -333,7 +350,7 @@ impl PrologVM {
                     self.call_stack.push(CallFrame::create(code.clone(), *frame_size as usize));
                 }
                 Instruction::Return => {
-                    println!("Returning");
+                    debugln!("Returning");
                     if self.freeze_idx < self.curr_frame {
                         self.call_stack.pop();
                     } 
@@ -341,7 +358,7 @@ impl PrologVM {
                     if self.call_stack.is_empty() || self.curr_frame == 0 {
                         break
                     }
-                    println!("sizes {} {}", self.call_stack.len(), self.curr_frame);
+                    debugln!("sizes {} {}", self.call_stack.len(), self.curr_frame);
                     self.curr_frame -= 1;                    
                     let call_frame = &mut self.call_stack[self.curr_frame];
                     pc = call_frame.pc;
@@ -392,32 +409,36 @@ impl PrologVM {
                     if !res {
                         let variable = self.read_local_variable(*var);
                         backtrack = true;
-                        println!("Can not unify constant - Var {}: Val: {:?} Const: {:?}", var, variable, constant);
+                        debugln!("Can not unify constant - Var {}: Val: {:?} Const: {:?}", var, variable, constant);
                     }
                 },
                 Instruction::Call(_) => todo!(),
                 Instruction::NamedCall(rule_info) => {
-                    println!("Calling {}/{}", &rule_info.functor, &rule_info.arity);
-                    self.save_pc(pc);
-                    pc = 0;
-                    let functor = *self.atoms.get(&rule_info.functor)
-                        .expect(format!("Functor not found {}/{}", &rule_info.functor, &rule_info.arity).as_str());
-                    let rule = self.rules.get(&(functor, rule_info.arity))
-                        .expect(format!("Rule not found {}/{}", &rule_info.functor, &rule_info.arity).as_str());
-                    let alternates = rule.code.borrow();
-                    if alternates.len() > 1 {
-                        let arg_count = rule.arity as usize;
-                        let mut args = Vec::with_capacity(arg_count);
-                        for i in 0..arg_count {
-                            args.push(self.registers[i].clone());
-                        } 
-                        self.choice_stack.push(
-                            ChoiceFrame::create(rule.clone(), args, self.trail.len(), self.call_stack.len())
-                        );
-                        self.freeze_idx = self.call_stack.len();
-                        println!("Pushed choice frame {}", self.choice_stack.len());
+                    debugln!("Calling {}/{}", &rule_info.functor, &rule_info.arity);
+                    if let Some(builtin) = get_builtin(&rule_info.functor, rule_info.arity) {
+                        builtin(self);
+                    } else {
+                        self.save_pc(pc);
+                        pc = 0;
+                        let functor = *self.atoms.get(&rule_info.functor)
+                            .expect(format!("Functor not found {}/{}", &rule_info.functor, &rule_info.arity).as_str());
+                        let rule = self.rules.get(&(functor, rule_info.arity))
+                            .expect(format!("Rule not found {}/{}", &rule_info.functor, &rule_info.arity).as_str());
+                        let alternates = rule.code.borrow();
+                        if alternates.len() > 1 {
+                            let arg_count = rule.arity as usize;
+                            let mut args = Vec::with_capacity(arg_count);
+                            for i in 0..arg_count {
+                                args.push(self.registers[i].clone());
+                            } 
+                            self.choice_stack.push(
+                                ChoiceFrame::create(rule.clone(), args, self.trail.len(), self.call_stack.len())
+                            );
+                            self.freeze_idx = self.call_stack.len();
+                            debugln!("Pushed choice frame {}", self.choice_stack.len());
+                        }
+                        code = alternates[0].clone();
                     }
-                    code = alternates[0].clone();
                 }
                 Instruction::IntrinsicCall(intrinsic) => self.execute_intrinsic(intrinsic),
             }
@@ -428,11 +449,11 @@ impl PrologVM {
         match intrinsic {
             Intrinsic::PrintRegister(register) => {
                 let val1 = self.read_register(*register);
-                println!("Register {}: {:?}", *register, val1);
+                debugln!("Register {}: {:?}", *register, val1);
             }
             Intrinsic::PrintVariable(var) => {
                 let val = self.read_local_variable(*var);
-                println!("Variable {}: {:?}", var, val);
+                debugln!("Variable {}: {:?}", var, val);
             }
         }
     }

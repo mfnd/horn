@@ -8,3 +8,6 @@ edition = "2021"
 [dependencies]
 pest = "2.0"
 pest_derive = "2.0"
+lazy_static = "1.4"
+log = { version = "0.4", features = ["max_level_debug", "release_max_level_info"] }
+rustyline = "9.1.0"
