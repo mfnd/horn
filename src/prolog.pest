@@ -8,7 +8,11 @@ char = {
     | "\\" ~ ("\"" | "\\" | "/" | "b" | "f" | "n" | "r" | "t")
     | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
 }
-atom = { ASCII_ALPHA_LOWER ~ ASCII_ALPHANUMERIC* }
+
+operators = {
+    "+" | "-" | "*" | "/"
+}
+atom = { (ASCII_ALPHA_LOWER ~ ASCII_ALPHANUMERIC*) | operators }
 variable = { ASCII_ALPHA_UPPER ~ ASCII_ALPHANUMERIC*}
 
 structure = { atom ~ "(" ~ terms ~ ")" }

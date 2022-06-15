@@ -1,11 +1,11 @@
-use std::{ops::Add, collections::HashSet};
+use std::{ops::Add, collections::{HashSet, HashMap}, hash::Hash, mem};
 
 use crate::{parser::{CFGNode, Structure, Term}, vm::{Instruction, Value, RuleInfo}};
 
 
 #[derive(Debug)]
-pub struct RuleDef {
-    pub functor: String,
+pub struct PredicateDef {
+    pub functor: usize,
     pub arity: usize,
     pub code: Vec<Instruction>
 }
@@ -13,56 +13,101 @@ pub struct RuleDef {
 #[derive(Debug)]
 pub struct QueryDef {
     pub variables: Vec<String>,
+    pub atoms: Vec<String>,
+    pub atoms_by_symbol: HashMap<String, usize>,
     pub code: Vec<Instruction>
 }
 
+#[derive(Debug)]
+pub struct Module {
+    pub atoms: Vec<String>,
+    pub atoms_by_symbol: HashMap<String, usize>,
+    pub predicates: Vec<PredicateDef>
+}
+
+impl Module {
+
+    fn new() -> Self {
+        Module {
+            atoms: Vec::new(),
+            atoms_by_symbol: HashMap::new(),
+            predicates: Vec::new()
+        }
+    }
+
+}
+
 pub struct IRGen {
-    
+    curr_module: Module,
+    code: Vec<Instruction>,
+    variables: Vec<String>
 }
 
 impl IRGen {
 
-    pub fn generate(&self, cfg: CFGNode) -> Vec<RuleDef> {
-        let mut rule_defs = Vec::new();
+    pub fn new() -> Self {
+        IRGen {
+            curr_module: Module::new(),
+            code: Vec::new(),
+            variables: Vec::new()
+        }
+    }
+
+    pub fn generate(&mut self, cfg: CFGNode) -> Module {
 
         match cfg {
-            CFGNode::Fact(fact) => rule_defs.push(self.generate_fact(fact)),
-            CFGNode::Rule(_, _) => todo!(),
+            CFGNode::Fact(fact) => {
+                let pred = self.generate_fact(fact);
+                self.curr_module.predicates.push(pred);
+            }
+            CFGNode::Rule(head, body) => {
+                let pred = self.generate_rule(head, body);
+                self.curr_module.predicates.push(pred);
+            }
             CFGNode::File(nodes) => {
-                for n in nodes {
-                    rule_defs.extend(self.generate(n));
-                }
+                let pred_vec = self.generate_file(nodes);
+                self.curr_module.predicates.extend(pred_vec);
             }
             _ => unreachable!()
         }
 
-        rule_defs
+        mem::replace(&mut self.curr_module, Module::new())
     }
 
-    fn generate_fact(&self, fact: Structure) -> RuleDef {
-        let functor = fact.functor;
+    fn generate_file(&mut self, nodes: Vec<CFGNode>) -> Vec<PredicateDef> {
+        let mut predicates : Vec<PredicateDef> = Vec::new();
+        for node in nodes {
+            match node {
+                CFGNode::Fact(fact) => predicates.push(self.generate_fact(fact)),
+                CFGNode::Rule(head, body) => predicates.push(self.generate_rule(head, body)),
+                _ => unreachable!()
+            }
+        }
+        predicates
+    }
+
+    fn generate_fact(&mut self, fact: Structure) -> PredicateDef {
+        let functor = self.get_or_create_atom(fact.functor);
         let arity = fact.params.len();
 
-        let mut code = Vec::new();
-        let mut variables : Vec<&str> = Vec::new();
         for (idx, param) in fact.params.iter().enumerate() {
             match param {
-                Term::Number(num) => code.push(
+                Term::Number(num) => self.code.push(
                     Instruction::UnifyRegisterWithConstant(idx as u32, Value::Int(*num))
                 ),
-                Term::String(s) => code.push(
+                Term::String(s) => self.code.push(
                     Instruction::UnifyRegisterWithConstant(idx as u32, Value::Str(s.clone()))
                 ),
                 Term::Atom(atom) => todo!(),
                 Term::Variable(variable) => {
-                    if let Some(var_idx) = variables.iter().position(|&v| v == variable) {
-                        code.push(
+                    if let Some(var_idx) = self.variables.iter().position(|v| v == variable) {
+                        self.code.push(
                             Instruction::UnifyRegister(var_idx as u32, idx as u32)
                         )
                     } else {
-                        let var_idx = variables.len();
-                        variables.push(variable);
-                        code.push(
+                        let var_idx = self.variables.len();
+                        self.variables.push(String::from(variable));
+                        self.code.push(
                             Instruction::LoadReg(idx as u32, var_idx as u32)
                         )
                     }
@@ -71,47 +116,122 @@ impl IRGen {
             }
         }
 
-        code.insert(0, Instruction::Allocate(variables.len() as u32));
-        code.push(Instruction::Return);
+        self.code.insert(0, Instruction::Allocate(self.variables.len() as u32));
+        self.code.push(Instruction::Return);
 
-        RuleDef { functor, arity, code }
+        self.variables.clear();
+
+        PredicateDef { functor, arity, code: mem::replace(&mut self.code, Vec::new()), }
     }
 
-    pub fn generate_query(&self, terms: Vec<Term>) -> QueryDef {
-        let mut code = Vec::new();
-        let mut variables : Vec<String> = Vec::new();
-        for term in terms {
-            match term {
+    fn generate_rule(&mut self, head: Structure, body: Vec<Term>) -> PredicateDef {
+        let functor = self.get_or_create_atom(head.functor);
+        let arity = head.params.len();
+
+        for (idx, param) in head.params.iter().enumerate() {
+            match param {
+                Term::Number(num) => self.code.push(
+                    Instruction::UnifyRegisterWithConstant(idx as u32, Value::Int(*num))
+                ),
+                Term::String(s) => self.code.push(
+                    Instruction::UnifyRegisterWithConstant(idx as u32, Value::Str(s.clone()))
+                ),
+                Term::Atom(atom) => todo!(),
+                Term::Variable(variable) => {
+                    if let Some(var_idx) = self.variables.iter().position(|v| v == variable) {
+                        self.code.push(
+                            Instruction::UnifyRegister(var_idx as u32, idx as u32)
+                        )
+                    } else {
+                        let var_idx = self.variables.len();
+                        self.variables.push(variable.clone());
+                        self.code.push(
+                            Instruction::LoadReg(idx as u32, var_idx as u32)
+                        )
+                    }
+                },
+                Term::Structure(_) => todo!(),
+            }
+        }
+
+        for body_term in body {
+            match body_term {
                 Term::Structure(s) => {
-                    let functor = s.functor;
+                    let functor = self.get_or_create_atom(s.functor);
                     let arity = s.params.len();
+
                     for (idx, param) in s.params.iter().enumerate() {
                         match param {
-                            Term::Number(num) => code.push(
+                            Term::Number(num) => self.code.push(
                                 Instruction::StoreRegConstant(idx as u32, Value::Int(*num))
                             ),
-                            Term::String(s) => code.push(
+                            Term::String(s) => self.code.push(
                                 Instruction::StoreRegConstant(idx as u32, Value::Str(s.clone()))
                             ),
                             Term::Atom(atom) => todo!(),
                             Term::Variable(variable) => {
-                                if let Some(var_idx) = variables.iter().position(|v| v == variable) {
-                                    code.push(
+                                if let Some(var_idx) = self.variables.iter().position(|v| v == variable) {
+                                    self.code.push(
                                         Instruction::StoreRegVariable(idx as u32, var_idx as u32)
                                     )
                                 } else {
-                                    let var_idx = variables.len();
-                                    variables.push(variable.clone());
-                                    code.push(
+                                    let var_idx = self.variables.len();
+                                    self.variables.push(variable.clone());
+                                    self.code.push(
                                         Instruction::StoreRegVariable(idx as u32, var_idx as u32)
                                     )
                                 }
             
                             },
-                            Term::Structure(_) => todo!(),
+                            Term::Structure(structure) => {
+                                self.create_structure(structure);
+                                self.code.push(Instruction::Pop(idx as u32))
+                            }
                         }
                     }
-                    code.push(Instruction::NamedCall(RuleInfo::boxed(&functor, arity as u32)));
+                    self.code.push(Instruction::NamedCall(functor, arity as u32));
+
+                },
+                _ => todo!()
+            }
+        }
+
+        self.code.insert(0, Instruction::Allocate(self.variables.len() as u32));
+        self.code.push(Instruction::Return);
+
+        self.variables.clear();
+
+        PredicateDef { functor, arity, code: mem::replace(&mut self.code, Vec::new()), }
+    }
+
+    pub fn generate_query(&mut self, terms: Vec<Term>) -> QueryDef {
+        for term in terms {
+            match term {
+                Term::Structure(s) => {
+                    let functor = self.get_or_create_atom(s.functor);
+                    let arity = s.params.len();
+                    for (idx, param) in s.params.iter().enumerate() {
+                        match param {
+                            Term::Number(num) => self.code.push(
+                                Instruction::StoreRegConstant(idx as u32, Value::Int(*num))
+                            ),
+                            Term::String(s) => self.code.push(
+                                Instruction::StoreRegConstant(idx as u32, Value::Str(s.clone()))
+                            ),
+                            Term::Atom(atom) => todo!(),
+                            Term::Variable(variable) => {
+                                let var_idx = self.get_or_create_variable(variable);
+                                self.code.push(
+                                    Instruction::StoreRegVariable(idx as u32, var_idx as u32)
+                                );            
+                            },
+                            Term::Structure(structure) => {
+                                self.create_structure(&structure);
+                                self.code.push(Instruction::Pop(idx as u32))
+                            }
+                        }
+                    }
+                    self.code.push(Instruction::NamedCall(functor, arity as u32));
                 },
                 Term::Number(_) => todo!(),
                 Term::Atom(_) => todo!(),
@@ -120,14 +240,63 @@ impl IRGen {
             }
         }
 
-        for idx in 0..variables.len() {
-            code.push(Instruction::StoreRegVariable(idx as u32, idx as u32));
+        for idx in 0..self.variables.len() {
+            self.code.push(Instruction::StoreRegVariable(idx as u32, idx as u32));
         }
 
-        code.insert(0, Instruction::Allocate(variables.len() as u32));
-        code.push(Instruction::Return);
+        self.code.insert(0, Instruction::Allocate(self.variables.len() as u32));
+        self.code.push(Instruction::Return);
 
-        QueryDef { variables, code }
+        let query_module = mem::replace(&mut self.curr_module, Module::new());
+
+        QueryDef { 
+            variables: mem::replace(&mut self.variables, Vec::new()), 
+            code: mem::replace(&mut self.code, Vec::new()),
+            atoms: query_module.atoms,
+            atoms_by_symbol: query_module.atoms_by_symbol 
+        }
+    }
+
+    pub fn create_structure(&mut self, s: &Structure) {
+        let functor = self.get_or_create_atom(s.functor.clone());
+        let arity = s.params.len() as u32;
+
+        for arg in &s.params {
+            match arg {
+                Term::Number(num) => self.code.push(Instruction::PushConstant(Value::Int(*num))),
+                Term::Atom(_) => todo!(),
+                Term::String(_) => todo!(),
+                Term::Variable(name) => {
+                    let var_idx = self.get_or_create_variable(name);
+                    self.code.push(Instruction::PushVariable(var_idx))
+                }
+                Term::Structure(s) => self.create_structure(&s),
+            }
+        }
+
+        self.code.push(Instruction::CreateStructure(functor, arity));
+    }
+
+    pub fn get_or_create_atom(&mut self, val: String) -> usize {
+        let next_idx = self.curr_module.atoms.len();
+        match self.curr_module.atoms_by_symbol.get(&val) {
+            Some(atom) => *atom,
+            None => {
+                self.curr_module.atoms.push(val.clone());
+                self.curr_module.atoms_by_symbol.insert(val, next_idx);
+                next_idx
+            }
+        }
+    }
+
+    pub fn get_or_create_variable(&mut self, val: &str) -> u32 {
+        if let Some(var_idx) = self.variables.iter().position(|v| v == val) {
+            var_idx as u32
+        } else {
+            let var_idx = self.variables.len();
+            self.variables.push(String::from(val));
+            var_idx as u32
+        }
     }
 
 } 

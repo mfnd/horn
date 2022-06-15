@@ -1,6 +1,6 @@
 use std::borrow::Borrow;
 use std::cell::RefCell;
-use std::fmt;
+use std::{fmt, mem, vec};
 use std::hash::Hash;
 use std::iter::Inspect;
 use std::ops::Index;
@@ -9,9 +9,9 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::slice::SliceIndex;
 
-use crate::builtins::{BuiltIn, BUILTINS, get_builtin};
+use crate::builtins::{BuiltIn, BUILTINS};
 use crate::debugln;
-use crate::ir_gen::{QueryDef, IRGen};
+use crate::ir_gen::{QueryDef, IRGen, Module};
 use crate::parser::CFGNode;
 
 
@@ -41,6 +41,14 @@ impl ValueCell {
 
     pub fn get_value(&self) -> Value {
         self.value_ref.as_ref().borrow().clone()
+    }
+
+    pub fn get_value_deref(&self) -> Value {
+        let value = self.value_ref.as_ref().borrow().clone();
+        match value {
+            Value::Ref(value_cell) => value_cell.get_value_deref(),
+            _ => value
+        }
     }
 
     pub fn put_ref(&self, other: ValueCell) {
@@ -85,8 +93,14 @@ pub enum Instruction {
     UnifyConstant(u32, Value),
     UnifyRegister(u32, u32),
     Call(Rc<Rule>),
-    NamedCall(Box<RuleInfo>),
-    IntrinsicCall(Intrinsic)
+    NativeCall(Rc<NativePredicate>),
+    //NamedCall(Box<RuleInfo>),
+    NamedCall(usize, u32),
+    IntrinsicCall(Intrinsic),
+    PushConstant(Value),
+    PushVariable(u32),
+    CreateStructure(usize, u32),
+    Pop(u32)
 }
 
 struct CallFrame {
@@ -164,6 +178,21 @@ impl fmt::Debug for Rule {
     }
 }
 
+pub struct NativePredicate {
+    functor: String,
+    arity: u32,
+    function_ptr: BuiltIn
+}
+
+impl fmt::Debug for NativePredicate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NativePredicate")
+        .field("functor", &self.functor)
+        .field("arity", &self.arity)
+        .finish()
+    }
+}
+
 
 #[derive(Debug)]
 pub struct RuleInfo {
@@ -177,10 +206,39 @@ impl RuleInfo {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Operator {
+    Add = 0,
+    Sub = 1,
+    Mul = 2,
+    Div = 3
+}
+
+impl From<usize> for Operator {
+    fn from(op: usize) -> Self {
+        match op {
+            0 => Operator::Add,
+            1 => Operator::Sub,
+            2 => Operator::Mul,
+            3 => Operator::Div,
+            _ => panic!("Invalid operator")
+        }
+    }
+}
+
+const OPERATOR_ATOMS : &[(Operator, &str)] = &[
+    (Operator::Add, "+"),
+    (Operator::Sub, "-"),
+    (Operator::Mul, "*"),
+    (Operator::Div, "/")
+];
+
 pub struct PrologVM {
     rules: HashMap<(usize, u32), Rc<Rule>>,
+    native_predicates: HashMap<(usize, u32), Rc<NativePredicate>>,
     atoms: HashMap<String, usize>,
     registers: Vec<Value>,
+    value_stack: Vec<Value>,
     call_stack: Vec<CallFrame>,
     choice_stack: Vec<ChoiceFrame>,
     trail: Vec<ValueCell>,
@@ -191,10 +249,30 @@ pub struct PrologVM {
 impl PrologVM {
 
     pub fn new() -> Self {
+        let mut atoms = HashMap::new();
+        for (op, ident) in OPERATOR_ATOMS {
+            atoms.insert(String::from(*ident), *op as usize);
+        }
+
+        let mut native_predicates = HashMap::new();
+        BUILTINS.iter().for_each(|(name, builtin)| {
+            let idx = atoms.len();
+            atoms.insert(String::from(name.0), idx);
+            native_predicates.insert((idx, name.1), Rc::from(
+                NativePredicate {
+                    functor: String::from(name.0),
+                    arity: name.1,               
+                    function_ptr: *builtin
+                }
+            ));
+        });
+
         PrologVM { 
             rules: HashMap::new(),
-            atoms: HashMap::new(),
+            native_predicates: native_predicates,
+            atoms: atoms,
             registers: vec![Value::Nil; 16],
+            value_stack: Vec::new(),
             call_stack: Vec::new(),
             choice_stack: Vec::new(),
             trail: Vec::new(),
@@ -271,7 +349,7 @@ impl PrologVM {
 
     pub fn execute_query_str(&mut self, query_str: &str) {
         if let Some(CFGNode::Query(terms)) = CFGNode::parse_query(query_str) {
-            let ir_gen = IRGen {};
+            let mut ir_gen = IRGen::new();
             let query_rule = ir_gen.generate_query(terms);
             debugln!("{:?}", query_rule);
             self.execute_query(query_rule);
@@ -280,9 +358,14 @@ impl PrologVM {
         }
     }
 
-    pub fn execute_query(&mut self, query: QueryDef) {
+    pub fn execute_query(&mut self, mut query: QueryDef) {
         self.call_stack.clear();
         self.choice_stack.clear();
+
+        let atom_mapping: Vec<usize> = query.atoms.iter().map(|s| self.get_or_create_atom(s)).collect();
+        self.link_code(&mut query.code, &atom_mapping);
+
+
         let query_rule = Rule {
             functor: 0,
             arity: 0,
@@ -411,36 +494,57 @@ impl PrologVM {
                         backtrack = true;
                         debugln!("Can not unify constant - Var {}: Val: {:?} Const: {:?}", var, variable, constant);
                     }
-                },
-                Instruction::Call(_) => todo!(),
-                Instruction::NamedCall(rule_info) => {
-                    debugln!("Calling {}/{}", &rule_info.functor, &rule_info.arity);
-                    if let Some(builtin) = get_builtin(&rule_info.functor, rule_info.arity) {
-                        builtin(self);
-                    } else {
-                        self.save_pc(pc);
-                        pc = 0;
-                        let functor = *self.atoms.get(&rule_info.functor)
-                            .expect(format!("Functor not found {}/{}", &rule_info.functor, &rule_info.arity).as_str());
-                        let rule = self.rules.get(&(functor, rule_info.arity))
-                            .expect(format!("Rule not found {}/{}", &rule_info.functor, &rule_info.arity).as_str());
-                        let alternates = rule.code.borrow();
-                        if alternates.len() > 1 {
-                            let arg_count = rule.arity as usize;
-                            let mut args = Vec::with_capacity(arg_count);
-                            for i in 0..arg_count {
-                                args.push(self.registers[i].clone());
-                            } 
-                            self.choice_stack.push(
-                                ChoiceFrame::create(rule.clone(), args, self.trail.len(), self.call_stack.len())
-                            );
-                            self.freeze_idx = self.call_stack.len();
-                            debugln!("Pushed choice frame {}", self.choice_stack.len());
+                }
+                Instruction::Call(rule) => {
+                    //debugln!("Calling {}/{}", &rule_info.functor, &rule_info.arity);
+                    self.save_pc(pc);
+                    pc = 0;
+                    let rule = rule.clone();
+                    let alternates = rule.code.borrow();
+                    if alternates.len() == 0 {
+                        panic!("Predicate not defined");
+                    } else if alternates.len() > 1 {
+                        let arg_count = rule.arity as usize;
+                        let mut args = Vec::with_capacity(arg_count);
+                        for i in 0..arg_count {
+                            args.push(self.registers[i].clone());
+                        } 
+                        self.choice_stack.push(
+                            ChoiceFrame::create(rule.clone(), args, self.trail.len(), self.call_stack.len())
+                        );
+                        self.freeze_idx = self.call_stack.len();
+                        debugln!("Pushed choice frame {}", self.choice_stack.len());
+                    }
+                    code = alternates[0].clone();
+                }
+                Instruction::NativeCall(native_pred) => {
+                    (native_pred.function_ptr)(self);
+                }
+                Instruction::NamedCall(functor, arity) => unreachable!(),
+                Instruction::IntrinsicCall(intrinsic) => self.execute_intrinsic(intrinsic),
+                Instruction::PushConstant(val) => self.value_stack.push(val.clone()),
+                Instruction::PushVariable(local_var) => self.value_stack.push(Value::Ref(self.read_local_variable(*local_var))),
+                Instruction::CreateStructure(functor, arity) => {
+                    let stack_len = self.value_stack.len();
+                    let arity = *arity as usize;
+                    if stack_len >= arity as usize {
+                        let mut params = vec![Value::Nil; arity];
+                        for i in (0..arity).rev() {
+                            params[i] = self.value_stack.pop().unwrap();
                         }
-                        code = alternates[0].clone();
+                        self.value_stack.push(
+                            Value::Struct(
+                                Rc::from(
+                                    Struct {
+                                        functor: *functor,
+                                        terms: params,
+                                    }
+                                )
+                            )
+                        )
                     }
                 }
-                Instruction::IntrinsicCall(intrinsic) => self.execute_intrinsic(intrinsic),
+                Instruction::Pop(register) => self.registers[*register as usize] = self.value_stack.pop().unwrap(),
             }
         }
     }
@@ -477,27 +581,107 @@ impl PrologVM {
         curr_frame.stack[variable as usize].put(value);
     }
 
-    pub fn load_rule(&mut self, functor: &str, arity: u32, code: Vec<Instruction>) {
-        let next_atom_idx = self.atoms.len();
-        let functor = *self.atoms.entry(functor.to_string()).or_insert(next_atom_idx);
-        let rule_name = (functor, arity);
+    pub fn load_module(&mut self, module: Module) {
+        println!("{:?}", module);
+        let atom_mapping: Vec<usize> = module.atoms.iter().map(|s| self.get_or_create_atom(s)).collect();
+        for mut pred in module.predicates {
+            let mapped_functor = atom_mapping[pred.functor];
+            let rule_name = (mapped_functor, pred.arity as u32);
 
+            self.link_code(&mut pred.code, &atom_mapping);
 
-        match self.rules.entry(rule_name) {
-            Entry::Occupied(e) => {
-                let mut alternates = e.get().code.borrow_mut();
-                alternates.push(CodeBlock::from(code))
+            match self.rules.entry(rule_name) {
+                Entry::Occupied(e) => {
+                    let mut alternates = e.get().code.borrow_mut();
+                    alternates.push(CodeBlock::from(pred.code))
+                }
+                Entry::Vacant(e) => {
+                    let rule = Rc::from(
+                        Rule {
+                            functor: pred.functor,
+                            arity: pred.arity as u32,
+                            code: RefCell::from(vec![CodeBlock::from(pred.code)]),
+                        }
+                    );
+                    e.insert(rule);
+                }
             }
-            Entry::Vacant(e) => {
-                let rule = Rc::from(
-                    Rule {
-                        functor,
-                        arity,
-                        code: RefCell::from(vec![CodeBlock::from(code)]),
+        }
+    }
+
+    pub fn link_code(&mut self, code: &mut [Instruction], atom_mapping: &[usize]) {
+        for inst in code.iter_mut() {
+            match inst {
+                Instruction::NamedCall(functor, arity) => {
+                    let f = atom_mapping[*functor];
+                    let a = *arity;
+                    if let Some(native_pred) = self.get_native(f, a) {
+                        *inst = Instruction::NativeCall(native_pred);
+                    } else {
+                        *inst = Instruction::Call(self.get_or_create_predicate(f, a));
                     }
-                );
-                e.insert(rule);
+                }
+                Instruction::CreateStructure(functor, _) => {
+                    *functor = atom_mapping[*functor];
+                    
+                }
+                _ => ()
             }
+        }
+    }
+
+    pub fn get_or_create_atom(&mut self, symbol: &str) -> usize {
+        let next_idx = self.atoms.len();
+        *self.atoms.entry(symbol.to_string()).or_insert(next_idx)
+    }
+
+    pub fn get_native(&mut self, functor: usize, arity: u32) -> Option<Rc<NativePredicate>> {
+        self.native_predicates.get(&(functor, arity)).cloned()
+    }
+
+    pub fn get_or_create_predicate(&mut self, functor: usize, arity: u32) -> Rc<Rule> {
+        let name = (functor, arity);
+        self.rules.entry(name).or_insert_with(|| 
+            Rc::from(
+                Rule {
+                    functor,
+                    arity,
+                    code: RefCell::from(vec![]),
+                }
+            )
+        ).clone()
+    }
+
+    pub fn eval_arithmetic(&self, expr: &Value) -> Value {
+        match expr {
+            Value::Int(i) => Value::Int(*i),
+            Value::Struct(s) => {
+                let arity = s.terms.len();
+                if arity == 2 {
+                    let arg1 = self.eval_arithmetic(&s.terms[0]);
+                    let arg2 = self.eval_arithmetic(&s.terms[1]);
+                    match (arg1, arg2) {
+                        (Value::Int(v1), Value::Int(v2)) => {
+                            match s.functor.into() {
+                                Operator::Add => Value::Int(v1 + v2),
+                                Operator::Sub => Value::Int(v1 - v2),
+                                _ => panic!("Invalid operands")
+                            }
+                        }
+                        (a1, a2) => {
+                            println!("Operands {:?} {:?}", a1, a2);
+                            panic!("Invalid operands")
+                        }
+                    }
+                } else {
+                    panic!()
+                }
+            }
+            Value::Ref(value_cell) => {
+                //println!("Evaluating {:?}", value_cell);
+                value_cell.get_value_deref()
+            }
+            _ => todo!()
         }
     }
 
