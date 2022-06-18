@@ -1,4 +1,4 @@
-use std::{ops::Add, collections::{HashSet, HashMap}, hash::Hash, mem};
+use std::{ops::Add, collections::{HashSet, HashMap}, hash::Hash, mem, rc::Rc};
 
 use crate::{parser::{CFGNode, Structure, Term}, vm::{Instruction, Value, RuleInfo}};
 
@@ -92,23 +92,35 @@ impl IRGen {
 
         for (idx, param) in fact.params.iter().enumerate() {
             match param {
-                Term::Number(num) => self.code.push(
-                    Instruction::UnifyRegisterWithConstant(idx as u32, Value::Int(*num))
+                &Term::Number(num) => self.code.push(
+                    Instruction::UnifyRegisterConstant {
+                        register: idx as u32, 
+                        constant: Value::Int(num)
+                    }
                 ),
                 Term::String(s) => self.code.push(
-                    Instruction::UnifyRegisterWithConstant(idx as u32, Value::Str(s.clone()))
+                    Instruction::UnifyRegisterConstant {
+                        register: idx as u32, 
+                        constant: Value::Str(Rc::from(s.as_ref()))
+                    }
                 ),
                 Term::Atom(atom) => todo!(),
                 Term::Variable(variable) => {
                     if let Some(var_idx) = self.variables.iter().position(|v| v == variable) {
                         self.code.push(
-                            Instruction::UnifyRegister(var_idx as u32, idx as u32)
+                            Instruction::UnifyVariableRegister {
+                                variable: var_idx as u32,
+                                register: idx as u32
+                            }
                         )
                     } else {
                         let var_idx = self.variables.len();
                         self.variables.push(String::from(variable));
                         self.code.push(
-                            Instruction::LoadReg(idx as u32, var_idx as u32)
+                            Instruction::LoadRegister{
+                                register: idx as u32, 
+                                variable: var_idx as u32
+                            }
                         )
                     }
                 },
@@ -130,23 +142,35 @@ impl IRGen {
 
         for (idx, param) in head.params.iter().enumerate() {
             match param {
-                Term::Number(num) => self.code.push(
-                    Instruction::UnifyRegisterWithConstant(idx as u32, Value::Int(*num))
+                &Term::Number(num) => self.code.push(
+                    Instruction::UnifyRegisterConstant {
+                        register: idx as u32, 
+                        constant: Value::Int(num)
+                    }
                 ),
                 Term::String(s) => self.code.push(
-                    Instruction::UnifyRegisterWithConstant(idx as u32, Value::Str(s.clone()))
+                    Instruction::UnifyRegisterConstant {
+                        register: idx as u32, 
+                        constant: Value::Str(Rc::from(s.as_ref()))
+                    }
                 ),
                 Term::Atom(atom) => todo!(),
                 Term::Variable(variable) => {
                     if let Some(var_idx) = self.variables.iter().position(|v| v == variable) {
                         self.code.push(
-                            Instruction::UnifyRegister(var_idx as u32, idx as u32)
+                            Instruction::UnifyVariableRegister {
+                                variable: var_idx as u32, 
+                                register: idx as u32
+                            }
                         )
                     } else {
                         let var_idx = self.variables.len();
                         self.variables.push(variable.clone());
                         self.code.push(
-                            Instruction::LoadReg(idx as u32, var_idx as u32)
+                            Instruction::LoadRegister {
+                                register: idx as u32,
+                                variable: var_idx as u32
+                            }
                         )
                     }
                 },
@@ -162,23 +186,35 @@ impl IRGen {
 
                     for (idx, param) in s.params.iter().enumerate() {
                         match param {
-                            Term::Number(num) => self.code.push(
-                                Instruction::StoreRegConstant(idx as u32, Value::Int(*num))
+                            &Term::Number(num) => self.code.push(
+                                Instruction::StoreRegisterConstant {
+                                    register: idx as u32, 
+                                    constant: Value::Int(num)
+                                }
                             ),
                             Term::String(s) => self.code.push(
-                                Instruction::StoreRegConstant(idx as u32, Value::Str(s.clone()))
+                                Instruction::StoreRegisterConstant {
+                                    register: idx as u32,
+                                    constant: Value::Str(Rc::from(s.as_ref()))
+                                }
                             ),
                             Term::Atom(atom) => todo!(),
                             Term::Variable(variable) => {
                                 if let Some(var_idx) = self.variables.iter().position(|v| v == variable) {
                                     self.code.push(
-                                        Instruction::StoreRegVariable(idx as u32, var_idx as u32)
+                                        Instruction::StoreRegister {
+                                            register: idx as u32,
+                                            variable: var_idx as u32
+                                        }
                                     )
                                 } else {
                                     let var_idx = self.variables.len();
                                     self.variables.push(variable.clone());
                                     self.code.push(
-                                        Instruction::StoreRegVariable(idx as u32, var_idx as u32)
+                                        Instruction::StoreRegister {
+                                            register: idx as u32,
+                                            variable: var_idx as u32
+                                        }
                                     )
                                 }
             
@@ -212,17 +248,26 @@ impl IRGen {
                     let arity = s.params.len();
                     for (idx, param) in s.params.iter().enumerate() {
                         match param {
-                            Term::Number(num) => self.code.push(
-                                Instruction::StoreRegConstant(idx as u32, Value::Int(*num))
+                            &Term::Number(num) => self.code.push(
+                                Instruction::StoreRegisterConstant {
+                                    register: idx as u32,
+                                    constant: Value::Int(num)
+                                }
                             ),
                             Term::String(s) => self.code.push(
-                                Instruction::StoreRegConstant(idx as u32, Value::Str(s.clone()))
+                                Instruction::StoreRegisterConstant {
+                                    register: idx as u32, 
+                                    constant: Value::Str(Rc::from(s.as_ref()))
+                                }
                             ),
                             Term::Atom(atom) => todo!(),
                             Term::Variable(variable) => {
                                 let var_idx = self.get_or_create_variable(variable);
                                 self.code.push(
-                                    Instruction::StoreRegVariable(idx as u32, var_idx as u32)
+                                    Instruction::StoreRegister {
+                                        register: idx as u32, 
+                                        variable: var_idx as u32
+                                    }
                                 );            
                             },
                             Term::Structure(structure) => {
@@ -241,7 +286,10 @@ impl IRGen {
         }
 
         for idx in 0..self.variables.len() {
-            self.code.push(Instruction::StoreRegVariable(idx as u32, idx as u32));
+            self.code.push(Instruction::StoreRegister {
+                register: idx as u32, 
+                variable: idx as u32
+            });
         }
 
         self.code.insert(0, Instruction::Allocate(self.variables.len() as u32));

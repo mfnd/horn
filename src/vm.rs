@@ -1,4 +1,3 @@
-use std::borrow::Borrow;
 use std::cell::RefCell;
 use std::{fmt, mem, vec};
 use std::hash::Hash;
@@ -21,7 +20,7 @@ pub enum Value {
     All,
     Atom(usize),
     Int(i64),
-    Str(String),
+    Str(Rc<str>),
     Struct(Rc<Struct>),
     Ref(ValueCell)
 }
@@ -76,27 +75,19 @@ impl fmt::Debug for ValueCell {
 }
 
 #[derive(Debug)]
-pub enum Intrinsic {
-    PrintRegister(u32),
-    PrintVariable(u32)
-}
-
-#[derive(Debug)]
 pub enum Instruction {
     Allocate(u32),
     Return,
-    LoadReg(u32, u32),
-    StoreRegVariable(u32, u32),
-    StoreRegConstant(u32, Value),
-    UnifyRegisterWithConstant(u32, Value),
-    UnifyVariable(u32, u32),
-    UnifyConstant(u32, Value),
-    UnifyRegister(u32, u32),
+    LoadRegister { register: u32, variable: u32 },
+    StoreRegister{ register: u32, variable: u32 },
+    StoreRegisterConstant{ register: u32, constant: Value },
+    UnifyRegisterConstant{ register: u32, constant: Value },
+    UnifyVariables { variable1: u32, variable2: u32 },
+    UnifyVariableConstant { variable: u32, constant: Value },
+    UnifyVariableRegister { variable: u32, register: u32},
     Call(Rc<Rule>),
     NativeCall(Rc<NativePredicate>),
-    //NamedCall(Box<RuleInfo>),
     NamedCall(usize, u32),
-    IntrinsicCall(Intrinsic),
     PushConstant(Value),
     PushVariable(u32),
     CreateStructure(usize, u32),
@@ -233,6 +224,14 @@ const OPERATOR_ATOMS : &[(Operator, &str)] = &[
     (Operator::Div, "/")
 ];
 
+
+pub enum QueryError {
+    NoResult,
+    QueryNotSet
+}
+
+pub type QueryResult = Result<Vec<Value>, QueryError>;
+
 pub struct PrologVM {
     rules: HashMap<(usize, u32), Rc<Rule>>,
     native_predicates: HashMap<(usize, u32), Rc<NativePredicate>>,
@@ -244,6 +243,8 @@ pub struct PrologVM {
     trail: Vec<ValueCell>,
     curr_frame: usize,
     freeze_idx: usize,
+    code: Option<CodeBlock>,
+    pc: usize,
 }
 
 impl PrologVM {
@@ -278,6 +279,8 @@ impl PrologVM {
             trail: Vec::new(),
             curr_frame: 0,
             freeze_idx: 0,
+            code: None,
+            pc: 0,
         }
     }
 
@@ -337,55 +340,64 @@ impl PrologVM {
         }
     }
 
-    pub fn execute_code(&mut self, code: Vec<Instruction>) {
-        let query_rule = Rule {
-            functor: 0,
-            arity: 0,
-            code: RefCell::from(vec![CodeBlock::from(code)])
-        };
-        self.execute(Rc::from(query_rule));
-
-    }
-
-    pub fn execute_query_str(&mut self, query_str: &str) {
+    pub fn execute_query_str(&mut self, query_str: &str) -> Result<Vec<Value>, QueryError>{
         if let Some(CFGNode::Query(terms)) = CFGNode::parse_query(query_str) {
             let mut ir_gen = IRGen::new();
             let query_rule = ir_gen.generate_query(terms);
             debugln!("{:?}", query_rule);
-            self.execute_query(query_rule);
+            self.execute_query(query_rule)
         } else {
             panic!("Could not query");
         }
     }
 
-    pub fn execute_query(&mut self, mut query: QueryDef) {
+
+    pub fn execute_query(&mut self, mut query: QueryDef) -> Result<Vec<Value>, QueryError> {
         self.call_stack.clear();
         self.choice_stack.clear();
 
         let atom_mapping: Vec<usize> = query.atoms.iter().map(|s| self.get_or_create_atom(s)).collect();
         self.link_code(&mut query.code, &atom_mapping);
 
+        debugln!("Query: {:?}", query.code);
 
-        let query_rule = Rule {
-            functor: 0,
-            arity: 0,
-            code: RefCell::from(vec![CodeBlock::from(query.code)])
-        }; 
+        self.pc = 0;
+        self.code = Some(CodeBlock::from(query.code));
 
-        self.execute(Rc::from(query_rule));
+        self.next()
 
-        for (idx, var) in query.variables.iter().enumerate() {
-            let value = self.read_local_variable(idx as u32);
-            println!("{}: {:?}", var, value.get_value());
-        }
     }
 
-    pub fn execute(&mut self, rule: Rc<Rule>) {
-        let mut pc : usize = 0;
-        let mut code = rule.code.borrow()[0].clone();
-        let mut backtrack = false;
+    pub fn next(&mut self) -> Result<Vec<Value>, QueryError> {
+        let satisfied = self.execute()?;
+        if !satisfied {
+            return Err(QueryError::NoResult);
+        }
 
-        loop {
+        let mut results = Vec::new();
+        /*for (idx, var) in query.variables.iter().enumerate() {
+            let value = self.read_local_variable(idx as u32);
+            println!("{}: {:?}", var, value.get_value());
+        }*/
+        let curr_frame = &self.call_stack[self.curr_frame];
+        for i in &curr_frame.stack {
+            results.push(i.get_value_deref())
+        }
+
+        Ok(results)
+    }
+
+    pub fn execute(&mut self) -> Result<bool, QueryError> {
+        let mut pc : usize = self.pc;
+        let mut code = match &self.code {
+            Some(code) => code.clone(),
+            None => return Err(QueryError::QueryNotSet)
+        };
+        let mut backtrack = self.choice_stack.len() > 0;
+        let mut error: Option<QueryError> = None;
+        let mut satisfied = true;
+
+        'main: loop {
             if backtrack {
                 loop {
                     let last_choice = self.choice_stack.last_mut();
@@ -416,10 +428,11 @@ impl PrologVM {
                             break;
                         }
                     } else {
-                        panic!("Can not backtrack")
+                        satisfied = false;
+                        break 'main;
                     }
                     self.choice_stack.pop();
-                    print!("Popped choice frame: {}", self.choice_stack.len());
+                    debugln!("Popped choice frame: {}", self.choice_stack.len());
                 }
             }
 
@@ -433,66 +446,66 @@ impl PrologVM {
                     self.call_stack.push(CallFrame::create(code.clone(), *frame_size as usize));
                 }
                 Instruction::Return => {
-                    debugln!("Returning");
                     if self.freeze_idx < self.curr_frame {
                         self.call_stack.pop();
                     } 
 
                     if self.call_stack.is_empty() || self.curr_frame == 0 {
+                        debugln!("Call stack empty");
                         break
                     }
-                    debugln!("sizes {} {}", self.call_stack.len(), self.curr_frame);
                     self.curr_frame -= 1;                    
                     let call_frame = &mut self.call_stack[self.curr_frame];
                     pc = call_frame.pc;
                     code = call_frame.code.clone();
                 }
-                Instruction::LoadReg(register, local_var) => {
+                Instruction::Pop(register) => self.registers[*register as usize] = self.value_stack.pop().unwrap(),
+                Instruction::LoadRegister { register, variable } => {
                     let value = self.read_register(*register);
-                    self.write_local_variable(*local_var, value);
+                    self.write_local_variable(*variable, value);
                 }
-                Instruction::StoreRegVariable(register, local_var) => {
-                    self.registers[*register as usize] = Value::Ref(self.read_local_variable(*local_var));
+                Instruction::StoreRegister { register, variable } => {
+                    self.registers[*register as usize] = Value::Ref(self.read_local_variable(*variable));
                 }
-                Instruction::StoreRegConstant(register, value) => {
-                    self.registers[*register as usize] = value.clone();
-                }
-                Instruction::UnifyRegisterWithConstant(reg, constant) => {
-                    let val = self.read_register(*reg);
+                Instruction::StoreRegisterConstant { register, constant } => {
+                    self.registers[*register as usize] = constant.clone();
+                },
+                Instruction::UnifyRegisterConstant { register, constant } => {
+                    let val = self.read_register(*register);
                     let res = self.unify(
                         val,
                         constant.clone()
                     );
                     if !res {
                         backtrack = true;
-                        //panic!("Can not unify");
                     }
                 }
-                Instruction::UnifyRegister(var, reg) => {
-                    let val = self.read_register(*reg);
+                Instruction::UnifyVariables { variable1, variable2 } => {
                     let res = self.unify(
-                        Value::Ref(self.read_local_variable(*var)),
+                        Value::Ref(self.read_local_variable(*variable1)),
+                        Value::Ref(self.read_local_variable(*variable2))
+                    );
+                    if !res {
+                        backtrack = true;
+                    }
+                }
+                Instruction::UnifyVariableConstant { variable, constant } => {
+                    let res = self.unify(Value::Ref(self.read_local_variable(*variable)), constant.clone());
+                    if !res {
+                        let value = self.read_local_variable(*variable);
+                        debugln!("Can not unify constant - Var {}: Val: {:?} Const: {:?}", variable, value, constant);
+                        backtrack = true;
+                        
+                    }
+                }
+                Instruction::UnifyVariableRegister { variable, register } => {
+                    let val = self.read_register(*register);
+                    let res = self.unify(
+                        Value::Ref(self.read_local_variable(*variable)),
                         val
                     );
                     if !res {
-                        panic!("Can not unify");
-                    }
-                }
-                Instruction::UnifyVariable(var1, var2) => {
-                    let res = self.unify(
-                        Value::Ref(self.read_local_variable(*var1)),
-                        Value::Ref(self.read_local_variable(*var2))
-                    );
-                    if !res {
-                        panic!("Can not unify");
-                    }
-                }
-                Instruction::UnifyConstant(var, constant) => {
-                    let res = self.unify(Value::Ref(self.read_local_variable(*var)), constant.clone());
-                    if !res {
-                        let variable = self.read_local_variable(*var);
                         backtrack = true;
-                        debugln!("Can not unify constant - Var {}: Val: {:?} Const: {:?}", var, variable, constant);
                     }
                 }
                 Instruction::Call(rule) => {
@@ -521,7 +534,6 @@ impl PrologVM {
                     (native_pred.function_ptr)(self);
                 }
                 Instruction::NamedCall(functor, arity) => unreachable!(),
-                Instruction::IntrinsicCall(intrinsic) => self.execute_intrinsic(intrinsic),
                 Instruction::PushConstant(val) => self.value_stack.push(val.clone()),
                 Instruction::PushVariable(local_var) => self.value_stack.push(Value::Ref(self.read_local_variable(*local_var))),
                 Instruction::CreateStructure(functor, arity) => {
@@ -544,21 +556,18 @@ impl PrologVM {
                         )
                     }
                 }
-                Instruction::Pop(register) => self.registers[*register as usize] = self.value_stack.pop().unwrap(),
+
             }
         }
-    }
+        
+        if self.choice_stack.len() == 0 {
+            self.pc = 0;
+            self.code = None;
+        }
 
-    pub fn execute_intrinsic(&self, intrinsic: &Intrinsic) {
-        match intrinsic {
-            Intrinsic::PrintRegister(register) => {
-                let val1 = self.read_register(*register);
-                debugln!("Register {}: {:?}", *register, val1);
-            }
-            Intrinsic::PrintVariable(var) => {
-                let val = self.read_local_variable(*var);
-                debugln!("Variable {}: {:?}", var, val);
-            }
+        match error {
+            Some(e) => Err(e),
+            None => Ok(satisfied)
         }
     }
 
@@ -669,7 +678,7 @@ impl PrologVM {
                             }
                         }
                         (a1, a2) => {
-                            println!("Operands {:?} {:?}", a1, a2);
+                            debugln!("Operands {:?} {:?}", a1, a2);
                             panic!("Invalid operands")
                         }
                     }
@@ -677,10 +686,7 @@ impl PrologVM {
                     panic!()
                 }
             }
-            Value::Ref(value_cell) => {
-                //println!("Evaluating {:?}", value_cell);
-                value_cell.get_value_deref()
-            }
+            Value::Ref(value_cell) => value_cell.get_value_deref(),
             _ => todo!()
         }
     }

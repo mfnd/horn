@@ -10,8 +10,7 @@ pub type BuiltIn = fn(&mut PrologVM) -> bool;
 
 pub fn consult(vm: &mut PrologVM) -> bool {
     if let Value::Str(file_path) = vm.read_register(0) {
-        println!("Consulting {}...", file_path);
-        let file = fs::read_to_string(&file_path).unwrap();
+        let file = fs::read_to_string(&*file_path).unwrap();
         let file_node = CFGNode::parse_file(&file).expect("Couldn't parse");
         let mut ir_gen = IRGen::new();
         let module = ir_gen.generate(file_node);
