@@ -1,12 +1,9 @@
 use std::cell::RefCell;
 use std::{fmt, mem, vec};
-use std::hash::Hash;
-use std::iter::Inspect;
 use std::ops::Index;
 use std::rc::Rc;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
-use std::slice::SliceIndex;
 
 use crate::builtins::{BuiltIn, BUILTINS};
 use crate::debugln;
@@ -22,7 +19,35 @@ pub enum Value {
     Int(i64),
     Str(Rc<str>),
     Struct(Rc<Struct>),
+    Ref(ValueCell),
+    List(List)
+}
+
+#[derive(Clone, Debug)]
+pub enum List {
+    Nil,
+    Cons(Rc<Node>),
     Ref(ValueCell)
+}
+
+impl List {
+
+    fn cons(head: Value, tail: List) -> Self {
+        List::Cons(
+            Rc::from(
+                Node {
+                    head,
+                    tail
+                }
+            )
+        )
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Node {
+    head: Value,
+    tail: List
 }
 
 #[derive(Debug)]
@@ -81,7 +106,9 @@ pub enum Instruction {
     LoadRegister { register: u32, variable: u32 },
     StoreRegister{ register: u32, variable: u32 },
     StoreRegisterConstant{ register: u32, constant: Value },
+    ConsListRegister {register: u32, value: Value},
     UnifyRegisterConstant{ register: u32, constant: Value },
+    PopUnifyRegister { register: u32 },
     UnifyVariables { variable1: u32, variable2: u32 },
     UnifyVariableConstant { variable: u32, constant: Value },
     UnifyVariableRegister { variable: u32, register: u32},
@@ -91,21 +118,24 @@ pub enum Instruction {
     PushConstant(Value),
     PushVariable(u32),
     CreateStructure(usize, u32),
+    CreateList { head_count: u32, with_tail: bool},
     Pop(u32)
 }
 
 struct CallFrame {
     stack: Vec<ValueCell>,
     code: CodeBlock,
-    pc: usize
+    prev_pc: usize,
+    prev_frame: usize
 }
 
 impl CallFrame {
-    fn create(code: CodeBlock, stack_size: usize) -> Self {
+    fn create(code: CodeBlock, stack_size: usize, prev_frame: usize, prev_pc: usize) -> Self {
         CallFrame {
             stack: (0..stack_size).map(|_| ValueCell::new()).collect(),
             code,
-            pc: 0
+            prev_pc,
+            prev_frame
         }
     }
 }
@@ -116,16 +146,18 @@ struct ChoiceFrame {
     choice_idx: usize,
     trail_top: usize,
     call_top: usize,
+    prev_pc: usize,
 }
 
 impl ChoiceFrame {
-    fn create(rule: Rc<Rule>, args: Vec<Value>, trail_top: usize, call_top: usize) -> Self {
+    fn create(rule: Rc<Rule>, args: Vec<Value>, trail_top: usize, call_top: usize, prev_pc: usize) -> Self {
         ChoiceFrame {
             args,
             rule,
             choice_idx: 0,
             trail_top,
-            call_top
+            call_top,
+            prev_pc
         }
     }
 }
@@ -245,6 +277,7 @@ pub struct PrologVM {
     freeze_idx: usize,
     code: Option<CodeBlock>,
     pc: usize,
+    prev_pc: usize,
 }
 
 impl PrologVM {
@@ -281,6 +314,7 @@ impl PrologVM {
             freeze_idx: 0,
             code: None,
             pc: 0,
+            prev_pc: 0,
         }
     }
 
@@ -306,6 +340,9 @@ impl PrologVM {
                     false
                 }
             }
+            (Value::List(list1), Value::List(list2)) => {
+                self.unify_lists(&list1, &list2)
+            }
             (Value::Ref(loc1), Value::Ref(loc2)) => {
                 let v1 = loc1.get_value();
                 let v2 = loc2.get_value();
@@ -327,6 +364,7 @@ impl PrologVM {
             },
             (Value::Ref(loc), other) | (other, Value::Ref(loc)) => {
                 let ref_val = loc.get_value();
+                
                 match ref_val {
                     Value::Nil => {
                         self.trail.push(loc.clone());
@@ -340,11 +378,82 @@ impl PrologVM {
         }
     }
 
+    pub fn unify_lists(&mut self, first: &List, second: &List) -> bool {
+        let mut list1 = first;
+        let mut list2 = second;
+
+        
+        
+        loop {
+            match (list1, list2) {
+                (List::Nil, List::Nil) => break,
+                (List::Nil, List::Cons(_)) => return false,
+                (List::Cons(_), List::Nil) => return false,
+                (List::Cons(node1), List::Cons(node2)) => {
+                    if Rc::ptr_eq(&node1, &node2) {
+                        return true;
+                    }
+                    if !self.unify(node1.head.clone(), node2.head.clone()) {
+                        return false;
+                    }
+                    list1 = &node1.tail;
+                    list2 = &node2.tail;
+                }
+                (List::Nil, List::Ref(loc)) | (List::Ref(loc), List::Nil)  => {
+                    self.trail.push(loc.clone());
+                    loc.put(Value::List(List::Nil));
+                    return true;
+                },
+                (cons_list @ List::Cons(node), List::Ref(loc)) | (List::Ref(loc), cons_list @ List::Cons(node)) => {
+                    let ref_val = loc.get_value_deref();
+                    match ref_val {
+                        Value::Nil => {
+                            self.trail.push(loc.clone());
+                            loc.put(Value::List(List::Cons(node.clone())));
+                        }
+                        Value::List(list) => return self.unify_lists(&list, cons_list),
+                        _ => return false
+                    }
+                }
+                (List::Ref(loc1), List::Ref(loc2)) => {
+                    let list1 = loc1.get_value_deref();
+                    let list2 = loc2.get_value_deref();
+                    match (&list1, &list2) {
+                        (Value::Nil, Value::Nil) => {
+                            self.trail.push(loc1.clone());
+                            loc1.put_ref(loc2.clone());
+                            return true;
+                        }
+                        (Value::Nil, Value::List(_)) => {
+                            self.trail.push(loc1.clone());
+                            loc1.put(list2.clone());
+                            return true;
+                        },
+                        (Value::List(_), Value::Nil) => {
+                            self.trail.push(loc2.clone());
+                            loc2.put(list1.clone());
+                            return true;
+                        },
+                        (Value::List(_), Value::List(_)) => {
+                            self.unify(list1, list2);
+                        }
+                        _ => {
+                            panic!("List reference values are expected to be lists - Unify {:?} and {:?}", list1, list2);
+                        }
+                    }
+                }
+                _ => unreachable!()
+            }
+        }
+
+        true
+    }
+
     pub fn execute_query_str(&mut self, query_str: &str) -> Result<Vec<Value>, QueryError>{
         if let Some(CFGNode::Query(terms)) = CFGNode::parse_query(query_str) {
             let mut ir_gen = IRGen::new();
             let query_rule = ir_gen.generate_query(terms);
-            debugln!("{:?}", query_rule);
+            
             self.execute_query(query_rule)
         } else {
             panic!("Could not query");
@@ -355,11 +464,12 @@ impl PrologVM {
     pub fn execute_query(&mut self, mut query: QueryDef) -> Result<Vec<Value>, QueryError> {
         self.call_stack.clear();
         self.choice_stack.clear();
+        self.curr_frame = 0;
 
         let atom_mapping: Vec<usize> = query.atoms.iter().map(|s| self.get_or_create_atom(s)).collect();
         self.link_code(&mut query.code, &atom_mapping);
 
-        debugln!("Query: {:?}", query.code);
+        
 
         self.pc = 0;
         self.code = Some(CodeBlock::from(query.code));
@@ -375,11 +485,7 @@ impl PrologVM {
         }
 
         let mut results = Vec::new();
-        /*for (idx, var) in query.variables.iter().enumerate() {
-            let value = self.read_local_variable(idx as u32);
-            println!("{}: {:?}", var, value.get_value());
-        }*/
-        let curr_frame = &self.call_stack[self.curr_frame];
+        let curr_frame = &self.call_stack[0];
         for i in &curr_frame.stack {
             results.push(i.get_value_deref())
         }
@@ -404,10 +510,10 @@ impl PrologVM {
                     if let Some(choice_frame) = last_choice {
                         let alternates = choice_frame.rule.code.borrow();
                         if choice_frame.choice_idx + 1 < alternates.len() {
-                            debugln!("Trying alternative: {}", choice_frame.choice_idx + 1);
+                            
                             while self.trail.len() > choice_frame.trail_top {
                                 if let Some(change) = self.trail.pop() {
-                                    debugln!("Reverting {:?}", change);
+                                    
                                     change.put(Value::Nil);
                                 }
                             }
@@ -419,11 +525,14 @@ impl PrologVM {
                             choice_frame.choice_idx += 1;
                             code = alternates[choice_frame.choice_idx].clone();
                             for (idx, val) in choice_frame.args.iter().enumerate() {
-                                debugln!("Reverting register {} to {:?}", idx, val);
+                                
                                 self.registers[idx] = val.clone();
                             }
                             pc = 0;
                             self.freeze_idx = choice_frame.call_top;
+                            self.curr_frame = choice_frame.call_top - 1;
+                            self.prev_pc = choice_frame.prev_pc;
+                            
                             backtrack = false;
                             break;
                         }
@@ -432,7 +541,7 @@ impl PrologVM {
                         break 'main;
                     }
                     self.choice_stack.pop();
-                    debugln!("Popped choice frame: {}", self.choice_stack.len());
+                    
                 }
             }
 
@@ -440,24 +549,40 @@ impl PrologVM {
             let instruction = &code[pc];
             pc += 1;
 
+            
+
             match instruction {
                 Instruction::Allocate(frame_size) => {
+                    let prev_frame = self.curr_frame;
                     self.curr_frame = self.call_stack.len();
-                    self.call_stack.push(CallFrame::create(code.clone(), *frame_size as usize));
+                    
+                    self.call_stack.push(CallFrame::create(code.clone(), *frame_size as usize, prev_frame, self.prev_pc));
                 }
                 Instruction::Return => {
-                    if self.freeze_idx < self.curr_frame {
-                        self.call_stack.pop();
-                    } 
-
-                    if self.call_stack.is_empty() || self.curr_frame == 0 {
-                        debugln!("Call stack empty");
+                    if self.call_stack.len() <= 1 || self.curr_frame == 0 {
+                        
                         break
-                    }
-                    self.curr_frame -= 1;                    
+                    }        
+
+                    
+                    let (prev_frame, prev_pc) = if self.freeze_idx <= self.curr_frame {
+                        assert_eq!(self.curr_frame, self.call_stack.len() - 1);
+                        let frame = self.call_stack.pop().unwrap();
+                        (frame.prev_frame, frame.prev_pc)
+                    } else {
+                        let frame = &self.call_stack[self.curr_frame];
+                        (frame.prev_frame, frame.prev_pc)
+                    };
+
+                    self.curr_frame = prev_frame;
+
+                    
+                            
                     let call_frame = &mut self.call_stack[self.curr_frame];
-                    pc = call_frame.pc;
+                    pc = prev_pc;
                     code = call_frame.code.clone();
+
+                    
                 }
                 Instruction::Pop(register) => self.registers[*register as usize] = self.value_stack.pop().unwrap(),
                 Instruction::LoadRegister { register, variable } => {
@@ -470,12 +595,34 @@ impl PrologVM {
                 Instruction::StoreRegisterConstant { register, constant } => {
                     self.registers[*register as usize] = constant.clone();
                 },
+                Instruction::ConsListRegister { register, value } => {
+                    let register_idx = *register as usize;
+                    let register_value = mem::replace(&mut self.registers[register_idx], Value::Nil);
+                    if let Value::List(list) = register_value {
+                        self.registers[register_idx] = Value::List(List::cons(value.clone(), list));
+                    }
+                }
                 Instruction::UnifyRegisterConstant { register, constant } => {
                     let val = self.read_register(*register);
                     let res = self.unify(
                         val,
                         constant.clone()
                     );
+                    if !res {
+                        backtrack = true;
+                    }
+                }
+                Instruction::PopUnifyRegister { register } => {
+                    let register_val = self.read_register(*register);
+                    let popped_val = self.value_stack.pop().unwrap();
+                    
+                    let res = self.unify(
+                        register_val,
+                        popped_val
+                    );
+
+                    let register_val = self.read_register(*register);
+                    
                     if !res {
                         backtrack = true;
                     }
@@ -493,7 +640,7 @@ impl PrologVM {
                     let res = self.unify(Value::Ref(self.read_local_variable(*variable)), constant.clone());
                     if !res {
                         let value = self.read_local_variable(*variable);
-                        debugln!("Can not unify constant - Var {}: Val: {:?} Const: {:?}", variable, value, constant);
+                        
                         backtrack = true;
                         
                     }
@@ -509,8 +656,9 @@ impl PrologVM {
                     }
                 }
                 Instruction::Call(rule) => {
-                    //debugln!("Calling {}/{}", &rule_info.functor, &rule_info.arity);
-                    self.save_pc(pc);
+                    
+                    //self.save_pc(pc);
+                    self.prev_pc = pc;
                     pc = 0;
                     let rule = rule.clone();
                     let alternates = rule.code.borrow();
@@ -523,10 +671,10 @@ impl PrologVM {
                             args.push(self.registers[i].clone());
                         } 
                         self.choice_stack.push(
-                            ChoiceFrame::create(rule.clone(), args, self.trail.len(), self.call_stack.len())
+                            ChoiceFrame::create(rule.clone(), args, self.trail.len(), self.call_stack.len(), self.prev_pc)
                         );
                         self.freeze_idx = self.call_stack.len();
-                        debugln!("Pushed choice frame {}", self.choice_stack.len());
+                        
                     }
                     code = alternates[0].clone();
                 }
@@ -554,6 +702,48 @@ impl PrologVM {
                                 )
                             )
                         )
+                    } else {
+                        panic!("Not enough values in stack")
+                    }
+                }
+                Instruction::CreateList { head_count, with_tail } => {
+                    let stack_len = self.value_stack.len();
+                    let required_count = if *with_tail {
+                        *head_count as usize + 1
+                    } else {
+                        *head_count as usize
+                    };
+                    if stack_len >= required_count {
+                        let mut list = if *with_tail {
+                            let stack_top = self.value_stack.pop().unwrap();
+                            match stack_top {
+                                Value::List(tail) => tail,
+                                Value::Ref(value_cell) => {
+                                    let value = value_cell.get_value();
+                                    match value {
+                                        Value::Nil => List::Ref(value_cell),
+                                        Value::List(list) => list,
+                                        _ => {
+                                            panic!("Expected unassigned ref or ref with list");
+                                        }
+                                    }
+                                }
+                                _ => {
+                                    println!("Value: {:#?}", stack_top);
+                                    panic!("Expected list");
+                                }
+                            }
+                        } else {
+                            List::Nil
+                        };
+                        
+                        for _ in 0..*head_count {
+                            let head = self.value_stack.pop().unwrap();
+                            list = List::cons(head, list);
+                        }
+                        self.value_stack.push(Value::List(list));
+                    } else {
+                        panic!("Not enough values in stack")
                     }
                 }
 
@@ -565,16 +755,18 @@ impl PrologVM {
             self.code = None;
         }
 
+        
+
         match error {
             Some(e) => Err(e),
             None => Ok(satisfied)
         }
     }
 
-    pub fn save_pc(&mut self, pc: usize) {
+    /*pub fn save_pc(&mut self, pc: usize) {
         let curr_frame = &mut self.call_stack[self.curr_frame];
         curr_frame.pc = pc;
-    }
+    }*/
 
     pub fn read_register(&self, register: u32) -> Value {
         self.registers[register as usize].clone()
@@ -591,7 +783,7 @@ impl PrologVM {
     }
 
     pub fn load_module(&mut self, module: Module) {
-        println!("{:?}", module);
+        
         let atom_mapping: Vec<usize> = module.atoms.iter().map(|s| self.get_or_create_atom(s)).collect();
         for mut pred in module.predicates {
             let mapped_functor = atom_mapping[pred.functor];
@@ -678,7 +870,7 @@ impl PrologVM {
                             }
                         }
                         (a1, a2) => {
-                            debugln!("Operands {:?} {:?}", a1, a2);
+                            
                             panic!("Invalid operands")
                         }
                     }

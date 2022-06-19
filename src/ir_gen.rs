@@ -1,13 +1,14 @@
 use std::{ops::Add, collections::{HashSet, HashMap}, hash::Hash, mem, rc::Rc};
 
-use crate::{parser::{CFGNode, Structure, Term}, vm::{Instruction, Value, RuleInfo}};
+use crate::{parser::{CFGNode, Structure, Term, ListExpr}, vm::{Instruction, Value, RuleInfo}};
 
 
 #[derive(Debug)]
 pub struct PredicateDef {
     pub functor: usize,
     pub arity: usize,
-    pub code: Vec<Instruction>
+    pub code: Vec<Instruction>,
+    pub variables: Vec<String>
 }
 
 #[derive(Debug)]
@@ -125,15 +126,23 @@ impl IRGen {
                     }
                 },
                 Term::Structure(_) => todo!(),
+                Term::Number(_) => todo!(),
+                Term::List(list_expr) => { 
+                    self.create_list(list_expr);
+                    self.code.push(Instruction::PopUnifyRegister { register: idx as u32 });
+                }
             }
         }
 
         self.code.insert(0, Instruction::Allocate(self.variables.len() as u32));
         self.code.push(Instruction::Return);
 
-        self.variables.clear();
-
-        PredicateDef { functor, arity, code: mem::replace(&mut self.code, Vec::new()), }
+        PredicateDef { 
+            functor, 
+            arity,
+            code: mem::replace(&mut self.code, Vec::new()), 
+            variables: mem::replace(&mut self.variables, Vec::new())
+        }
     }
 
     fn generate_rule(&mut self, head: Structure, body: Vec<Term>) -> PredicateDef {
@@ -175,6 +184,11 @@ impl IRGen {
                     }
                 },
                 Term::Structure(_) => todo!(),
+                Term::Number(_) => todo!(),
+                Term::List(list_expr) => { 
+                    self.create_list(list_expr);
+                    self.code.push(Instruction::PopUnifyRegister { register: idx as u32 });
+                }
             }
         }
 
@@ -223,6 +237,11 @@ impl IRGen {
                                 self.create_structure(structure);
                                 self.code.push(Instruction::Pop(idx as u32))
                             }
+                            Term::Number(_) => todo!(),
+                            Term::List(list_expr) => { 
+                                self.create_list(list_expr);
+                                self.code.push(Instruction::Pop(idx as u32))
+                            }
                         }
                     }
                     self.code.push(Instruction::NamedCall(functor, arity as u32));
@@ -235,9 +254,12 @@ impl IRGen {
         self.code.insert(0, Instruction::Allocate(self.variables.len() as u32));
         self.code.push(Instruction::Return);
 
-        self.variables.clear();
-
-        PredicateDef { functor, arity, code: mem::replace(&mut self.code, Vec::new()), }
+        PredicateDef { 
+            functor, 
+            arity,
+            code: mem::replace(&mut self.code, Vec::new()), 
+            variables: mem::replace(&mut self.variables, Vec::new())
+        }
     }
 
     pub fn generate_query(&mut self, terms: Vec<Term>) -> QueryDef {
@@ -271,9 +293,14 @@ impl IRGen {
                                 );            
                             },
                             Term::Structure(structure) => {
-                                self.create_structure(&structure);
+                                self.create_structure(structure);
                                 self.code.push(Instruction::Pop(idx as u32))
                             }
+                            Term::Number(_) => todo!(),
+                            Term::List(list_expr) => {
+                                self.create_list(list_expr);
+                                self.code.push(Instruction::Pop(idx as u32))
+                            },
                         }
                     }
                     self.code.push(Instruction::NamedCall(functor, arity as u32));
@@ -309,20 +336,39 @@ impl IRGen {
         let functor = self.get_or_create_atom(s.functor.clone());
         let arity = s.params.len() as u32;
 
-        for arg in &s.params {
-            match arg {
-                Term::Number(num) => self.code.push(Instruction::PushConstant(Value::Int(*num))),
-                Term::Atom(_) => todo!(),
-                Term::String(_) => todo!(),
-                Term::Variable(name) => {
-                    let var_idx = self.get_or_create_variable(name);
-                    self.code.push(Instruction::PushVariable(var_idx))
-                }
-                Term::Structure(s) => self.create_structure(&s),
-            }
+        for param in &s.params {
+            self.push_term(param);
         }
 
         self.code.push(Instruction::CreateStructure(functor, arity));
+    }
+
+    pub fn create_list(&mut self, list: &ListExpr) {
+        for head in &list.heads {
+            self.push_term(head);
+        }
+        if let Some(tail) = &list.tail {
+            self.push_term(tail)
+        }
+
+        self.code.push(Instruction::CreateList {
+            head_count: list.heads.len() as u32,
+            with_tail: list.tail.is_some()
+        });
+    }
+
+    pub fn push_term(&mut self, term: &Term) {
+        match term {
+            Term::Number(num) => self.code.push(Instruction::PushConstant(Value::Int(*num))),
+            Term::Atom(_) => todo!(),
+            Term::String(_) => todo!(),
+            Term::Variable(name) => {
+                let var_idx = self.get_or_create_variable(name);
+                self.code.push(Instruction::PushVariable(var_idx))
+            }
+            Term::Structure(s) => self.create_structure(s),
+            Term::List(l) => self.create_list(l),
+        }
     }
 
     pub fn get_or_create_atom(&mut self, val: String) -> usize {

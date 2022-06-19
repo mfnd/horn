@@ -1,6 +1,6 @@
 WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
 
-number = { "0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* }
+number = @{ "0" | ASCII_NONZERO_DIGIT ~ ASCII_DIGIT* }
 string = ${ "\"" ~ inner ~ "\"" }
 inner = @{ char* }
 char = {
@@ -12,13 +12,17 @@ char = {
 operators = {
     "+" | "-" | "*" | "/"
 }
-atom = { (ASCII_ALPHA_LOWER ~ ASCII_ALPHANUMERIC*) | operators }
-variable = { ASCII_ALPHA_UPPER ~ ASCII_ALPHANUMERIC*}
+atom = @{ (ASCII_ALPHA_LOWER ~ ( "_" | ASCII_ALPHANUMERIC)*) | operators }
+variable = @{ ASCII_ALPHA_UPPER ~ ASCII_ALPHANUMERIC*}
 
 structure = { atom ~ "(" ~ terms ~ ")" }
 
+
+list_tail = { "|" ~ variable }
+list = { "[" ~ terms?  ~  list_tail? ~ "]"  }
+
 term = {
-    structure | number | atom | variable | string
+    structure | list | number | atom | variable | string
 }
 
 terms = _{

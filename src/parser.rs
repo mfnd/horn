@@ -1,5 +1,7 @@
 use pest::{iterators::Pair, Parser};
 
+use crate::vm::List;
+
 #[derive(Parser)]
 #[grammar = "prolog.pest"]
 pub struct PrologParser;
@@ -8,6 +10,7 @@ pub type PrologRule = Rule;
 
 #[derive(Debug)]
 pub enum CFGNode {
+    ListTail(String),
     Term(Term),
     Fact(Structure),
     Rule(Structure, Vec<Term>),
@@ -81,6 +84,31 @@ impl CFGNode {
                 ))
                 
             },
+            Rule::list => {
+                let mut members: Vec<Term> = Vec::new();
+                let mut tail = None;
+                for p in pair.into_inner() {
+                    match CFGNode::from(p)? {
+                        CFGNode::Term(term) => members.push(term),
+                        CFGNode::ListTail(term) => tail = Some(Box::from(Term::Variable(term))),
+                        _ => unreachable!()
+                    }
+                }
+                CFGNode::Term(Term::List(
+                    ListExpr {
+                        heads: members, 
+                        tail: tail
+                    }
+                ))
+            }
+            Rule::list_tail => {
+                let variable = CFGNode::from(pair.into_inner().next()?)?;
+                if let CFGNode::Term(Term::Variable(var)) = variable {
+                    CFGNode::ListTail(var)
+                } else{
+                    return None
+                }
+            }
             Rule::term => CFGNode::from(pair.into_inner().next()?)?,
             Rule::fact => {
                 let inner = CFGNode::from(pair.into_inner().next()?)?;
@@ -89,7 +117,7 @@ impl CFGNode {
                 } else {
                     return None
                 }
-            },
+            }
             Rule::rule => {
                 let mut pairs = pair.into_inner();
                 let head_node = CFGNode::from(pairs.next()?)?;
@@ -132,11 +160,18 @@ pub enum Term {
     Atom(String),
     String(String),
     Variable(String),
-    Structure(Structure)
+    Structure(Structure),
+    List(ListExpr)
 }
 
 #[derive(Debug)]
 pub struct Structure {
     pub functor: String,
     pub params: Vec<Term>
+}
+
+#[derive(Debug)]
+pub struct ListExpr {
+    pub heads: Vec<Term>,
+    pub tail: Option<Box<Term>>
 }
