@@ -4,6 +4,9 @@ extern crate pest_derive;
 #[macro_use]
 extern crate lazy_static;
 
+#[cfg(test)]
+mod tests;
+
 mod vm;
 mod parser;
 mod ir_gen;

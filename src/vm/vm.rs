@@ -1,126 +1,17 @@
 use std::cell::RefCell;
-use std::{fmt, mem, vec};
-use std::ops::Index;
+use std::{mem, vec};
 use std::rc::Rc;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use crate::builtins::{BuiltIn, BUILTINS};
+use crate::builtins::BUILTINS;
 use crate::debugln;
 use crate::ir_gen::{QueryDef, IRGen, Module};
 use crate::parser::CFGNode;
+use crate::vm::{List, Instruction, Struct};
 
-
-#[derive(Clone, Debug)]
-pub enum Value {
-    Nil,
-    All,
-    Atom(usize),
-    Int(i64),
-    Str(Rc<str>),
-    Struct(Rc<Struct>),
-    Ref(ValueCell),
-    List(List)
-}
-
-#[derive(Clone, Debug)]
-pub enum List {
-    Nil,
-    Cons(Rc<Node>),
-    Ref(ValueCell)
-}
-
-impl List {
-
-    fn cons(head: Value, tail: List) -> Self {
-        List::Cons(
-            Rc::from(
-                Node {
-                    head,
-                    tail
-                }
-            )
-        )
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct Node {
-    head: Value,
-    tail: List
-}
-
-#[derive(Debug)]
-pub struct Struct {
-    functor: usize,
-    terms: Vec<Value>
-}
-
-#[derive(Clone)]
-pub struct ValueCell {
-    value_ref: Rc<RefCell<Value>>
-}
-
-impl ValueCell {
-
-    pub fn get_value(&self) -> Value {
-        self.value_ref.as_ref().borrow().clone()
-    }
-
-    pub fn get_value_deref(&self) -> Value {
-        let value = self.value_ref.as_ref().borrow().clone();
-        match value {
-            Value::Ref(value_cell) => value_cell.get_value_deref(),
-            _ => value
-        }
-    }
-
-    pub fn put_ref(&self, other: ValueCell) {
-        self.value_ref.as_ref().replace(Value::Ref(other));
-    }
-
-    pub fn put(&self, other: Value) {
-        self.value_ref.as_ref().replace(other);
-    }
-
-    pub fn new() -> Self {
-        ValueCell {
-            value_ref: Rc::from(RefCell::from(Value::Nil))
-        }
-    }
-
-}
-
-impl fmt::Debug for ValueCell {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ValueCell")
-         .field("value", &self.get_value())
-         .finish()
-    }
-}
-
-#[derive(Debug)]
-pub enum Instruction {
-    Allocate(u32),
-    Return,
-    LoadRegister { register: u32, variable: u32 },
-    StoreRegister{ register: u32, variable: u32 },
-    StoreRegisterConstant{ register: u32, constant: Value },
-    ConsListRegister {register: u32, value: Value},
-    UnifyRegisterConstant{ register: u32, constant: Value },
-    PopUnifyRegister { register: u32 },
-    UnifyVariables { variable1: u32, variable2: u32 },
-    UnifyVariableConstant { variable: u32, constant: Value },
-    UnifyVariableRegister { variable: u32, register: u32},
-    Call(Rc<Rule>),
-    NativeCall(Rc<NativePredicate>),
-    NamedCall(usize, u32),
-    PushConstant(Value),
-    PushVariable(u32),
-    CreateStructure(usize, u32),
-    CreateList { head_count: u32, with_tail: bool},
-    Pop(u32)
-}
+use super::{ValueCell, CodeBlock, Rule, NativePredicate, OPERATOR_ATOMS, Operator};
+use super::value::Value;
 
 struct CallFrame {
     stack: Vec<ValueCell>,
@@ -162,104 +53,11 @@ impl ChoiceFrame {
     }
 }
 
-
-#[derive(Clone)]
-pub struct CodeBlock {
-    code: Rc<Vec<Instruction>>
-}
-
-impl CodeBlock {
-
-    fn from(code: Vec<Instruction>) -> Self {
-        CodeBlock { 
-            code: Rc::from(code)
-        }
-    }
-
-}
-
-impl Index<usize> for CodeBlock {
-    type Output = Instruction;
-
-    fn index(&self, index: usize) -> &Self::Output {
-        &self.code[index]
-    }
-}
-
-pub struct Rule {
-    functor: usize,
-    arity: u32,
-    code: RefCell<Vec<CodeBlock>>
-}
-
-impl fmt::Debug for Rule {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Rule")
-        .field("functor", &self.functor)
-        .field("arity", &self.arity)
-        .finish()
-    }
-}
-
-pub struct NativePredicate {
-    functor: String,
-    arity: u32,
-    function_ptr: BuiltIn
-}
-
-impl fmt::Debug for NativePredicate {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("NativePredicate")
-        .field("functor", &self.functor)
-        .field("arity", &self.arity)
-        .finish()
-    }
-}
-
-
 #[derive(Debug)]
-pub struct RuleInfo {
-    functor: String,
-    arity: u32
-}
-
-impl RuleInfo {
-    pub fn boxed(functor: &str, arity: u32) -> Box<Self> {
-        Box::from(RuleInfo { functor: functor.to_string(), arity: arity })
-    }
-}
-
-#[derive(Clone, Copy)]
-enum Operator {
-    Add = 0,
-    Sub = 1,
-    Mul = 2,
-    Div = 3
-}
-
-impl From<usize> for Operator {
-    fn from(op: usize) -> Self {
-        match op {
-            0 => Operator::Add,
-            1 => Operator::Sub,
-            2 => Operator::Mul,
-            3 => Operator::Div,
-            _ => panic!("Invalid operator")
-        }
-    }
-}
-
-const OPERATOR_ATOMS : &[(Operator, &str)] = &[
-    (Operator::Add, "+"),
-    (Operator::Sub, "-"),
-    (Operator::Mul, "*"),
-    (Operator::Div, "/")
-];
-
-
 pub enum QueryError {
     NoResult,
-    QueryNotSet
+    QueryNotSet,
+    ParseError,
 }
 
 pub type QueryResult = Result<Vec<Value>, QueryError>;
@@ -364,7 +162,6 @@ impl PrologVM {
             },
             (Value::Ref(loc), other) | (other, Value::Ref(loc)) => {
                 let ref_val = loc.get_value();
-                
                 match ref_val {
                     Value::Nil => {
                         self.trail.push(loc.clone());
@@ -380,10 +177,7 @@ impl PrologVM {
 
     pub fn unify_lists(&mut self, first: &List, second: &List) -> bool {
         let mut list1 = first;
-        let mut list2 = second;
-
-        
-        
+        let mut list2 = second;        
         loop {
             match (list1, list2) {
                 (List::Nil, List::Nil) => break,
@@ -449,19 +243,20 @@ impl PrologVM {
         true
     }
 
-    pub fn execute_query_str(&mut self, query_str: &str) -> Result<Vec<Value>, QueryError>{
+    pub fn set_query_from_str(&mut self, query_str: &str) -> Result<(), QueryError> {
         if let Some(CFGNode::Query(terms)) = CFGNode::parse_query(query_str) {
             let mut ir_gen = IRGen::new();
             let query_rule = ir_gen.generate_query(terms);
-            
-            self.execute_query(query_rule)
+
+            self.set_query(query_rule);
+            Ok(())
         } else {
-            panic!("Could not query");
+            Err(QueryError::ParseError)
         }
     }
 
 
-    pub fn execute_query(&mut self, mut query: QueryDef) -> Result<Vec<Value>, QueryError> {
+    pub fn set_query(&mut self, mut query: QueryDef) {
         self.call_stack.clear();
         self.choice_stack.clear();
         self.curr_frame = 0;
@@ -469,28 +264,8 @@ impl PrologVM {
         let atom_mapping: Vec<usize> = query.atoms.iter().map(|s| self.get_or_create_atom(s)).collect();
         self.link_code(&mut query.code, &atom_mapping);
 
-        
-
         self.pc = 0;
         self.code = Some(CodeBlock::from(query.code));
-
-        self.next()
-
-    }
-
-    pub fn next(&mut self) -> Result<Vec<Value>, QueryError> {
-        let satisfied = self.execute()?;
-        if !satisfied {
-            return Err(QueryError::NoResult);
-        }
-
-        let mut results = Vec::new();
-        let curr_frame = &self.call_stack[0];
-        for i in &curr_frame.stack {
-            results.push(i.get_value_deref())
-        }
-
-        Ok(results)
     }
 
     pub fn execute(&mut self) -> Result<bool, QueryError> {
@@ -510,10 +285,10 @@ impl PrologVM {
                     if let Some(choice_frame) = last_choice {
                         let alternates = choice_frame.rule.code.borrow();
                         if choice_frame.choice_idx + 1 < alternates.len() {
-                            
+                            debugln!("Trying alternative: {}", choice_frame.choice_idx + 1);
                             while self.trail.len() > choice_frame.trail_top {
                                 if let Some(change) = self.trail.pop() {
-                                    
+                                    debugln!("Reverting {:?}", change);
                                     change.put(Value::Nil);
                                 }
                             }
@@ -525,14 +300,14 @@ impl PrologVM {
                             choice_frame.choice_idx += 1;
                             code = alternates[choice_frame.choice_idx].clone();
                             for (idx, val) in choice_frame.args.iter().enumerate() {
-                                
+                                debugln!("Reverting register {} to {:?}", idx, val);
                                 self.registers[idx] = val.clone();
                             }
                             pc = 0;
                             self.freeze_idx = choice_frame.call_top;
                             self.curr_frame = choice_frame.call_top - 1;
                             self.prev_pc = choice_frame.prev_pc;
-                            
+                            debugln!("Reverting freeze idx {} curr frame {}", self.freeze_idx, self.curr_frame);
                             backtrack = false;
                             break;
                         }
@@ -541,7 +316,7 @@ impl PrologVM {
                         break 'main;
                     }
                     self.choice_stack.pop();
-                    
+                    debugln!("Popped choice frame: {}", self.choice_stack.len());
                 }
             }
 
@@ -549,22 +324,20 @@ impl PrologVM {
             let instruction = &code[pc];
             pc += 1;
 
-            
-
             match instruction {
                 Instruction::Allocate(frame_size) => {
                     let prev_frame = self.curr_frame;
                     self.curr_frame = self.call_stack.len();
-                    
+                    debugln!("Allocating {:?} {:?}", prev_frame, self.curr_frame);
                     self.call_stack.push(CallFrame::create(code.clone(), *frame_size as usize, prev_frame, self.prev_pc));
                 }
                 Instruction::Return => {
                     if self.call_stack.len() <= 1 || self.curr_frame == 0 {
-                        
+                        debugln!("Call stack empty");
                         break
                     }        
 
-                    
+                    debugln!("Freeze {:?} Curr {:?}", self.freeze_idx, self.curr_frame);
                     let (prev_frame, prev_pc) = if self.freeze_idx <= self.curr_frame {
                         assert_eq!(self.curr_frame, self.call_stack.len() - 1);
                         let frame = self.call_stack.pop().unwrap();
@@ -576,13 +349,13 @@ impl PrologVM {
 
                     self.curr_frame = prev_frame;
 
-                    
+                    debugln!("Prev frame {}", self.curr_frame);
                             
                     let call_frame = &mut self.call_stack[self.curr_frame];
                     pc = prev_pc;
                     code = call_frame.code.clone();
 
-                    
+                    debugln!("Curr frame {:?} Freeze idx {:?} Pc {:?}", self.curr_frame, self.freeze_idx, pc); 
                 }
                 Instruction::Pop(register) => self.registers[*register as usize] = self.value_stack.pop().unwrap(),
                 Instruction::LoadRegister { register, variable } => {
@@ -615,14 +388,12 @@ impl PrologVM {
                 Instruction::PopUnifyRegister { register } => {
                     let register_val = self.read_register(*register);
                     let popped_val = self.value_stack.pop().unwrap();
-                    
                     let res = self.unify(
                         register_val,
                         popped_val
                     );
 
                     let register_val = self.read_register(*register);
-                    
                     if !res {
                         backtrack = true;
                     }
@@ -640,7 +411,7 @@ impl PrologVM {
                     let res = self.unify(Value::Ref(self.read_local_variable(*variable)), constant.clone());
                     if !res {
                         let value = self.read_local_variable(*variable);
-                        
+                        debugln!("Can not unify constant - Var {}: Val: {:?} Const: {:?}", variable, value, constant);
                         backtrack = true;
                         
                     }
@@ -656,8 +427,6 @@ impl PrologVM {
                     }
                 }
                 Instruction::Call(rule) => {
-                    
-                    //self.save_pc(pc);
                     self.prev_pc = pc;
                     pc = 0;
                     let rule = rule.clone();
@@ -674,7 +443,7 @@ impl PrologVM {
                             ChoiceFrame::create(rule.clone(), args, self.trail.len(), self.call_stack.len(), self.prev_pc)
                         );
                         self.freeze_idx = self.call_stack.len();
-                        
+                        debugln!("Pushed choice frame {}", self.choice_stack.len());
                     }
                     code = alternates[0].clone();
                 }
@@ -755,8 +524,6 @@ impl PrologVM {
             self.code = None;
         }
 
-        
-
         match error {
             Some(e) => Err(e),
             None => Ok(satisfied)
@@ -783,7 +550,7 @@ impl PrologVM {
     }
 
     pub fn load_module(&mut self, module: Module) {
-        
+        debugln!("{:#?}", module);
         let atom_mapping: Vec<usize> = module.atoms.iter().map(|s| self.get_or_create_atom(s)).collect();
         for mut pred in module.predicates {
             let mapped_functor = atom_mapping[pred.functor];
@@ -870,7 +637,7 @@ impl PrologVM {
                             }
                         }
                         (a1, a2) => {
-                            
+                            debugln!("Operands {:?} {:?}", a1, a2);
                             panic!("Invalid operands")
                         }
                     }
@@ -883,4 +650,28 @@ impl PrologVM {
         }
     }
 
+}
+
+impl Iterator for PrologVM {
+    type Item = Result<Vec<Value>, QueryError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match self.execute() {
+            Ok(true) => {
+                let mut results = Vec::new();
+                let curr_frame = &self.call_stack[0];
+                for i in &curr_frame.stack {
+                    // Deep copy unified variables since backtracking can revert bindings
+                    // TODO: Is there a way to solve this without resorting to deep copy?
+                    results.push(i.get_value_deref().deep_copy())
+                }
+        
+                Some(Ok(results))
+            }
+            Ok(false) | Err(QueryError::QueryNotSet) => {
+                None
+            }
+            Err(err) => Some(Err(err))
+        }
+    }
 }
