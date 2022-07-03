@@ -34,13 +34,13 @@ run_collect_assert! {
     map_multiple: (
         r#"
         map_plus_one([], []).
-        map_plus_one([H | T], [OutH | OutT]) :- is(OutH, +(H, 1)), map_plus_one(T, OutT).
+        map_plus_one([H | T], [OutH | OutT]) :- OutH is H + 1, map_plus_one(T, OutT).
 
         map_plus_ten([], []).
-        map_plus_ten([H | T], [OutH | OutT]) :- is(OutH, +(H, 10)), map_plus_ten(T, OutT).
+        map_plus_ten([H | T], [OutH | OutT]) :- OutH is H + 10, map_plus_ten(T, OutT).
 
         map_minus_one([], []).
-        map_minus_one([H | T], [OutH | OutT]) :- is(OutH, -(H, 1)), map_minus_one(T, OutT).
+        map_minus_one([H | T], [OutH | OutT]) :- OutH is H - 1, map_minus_one(T, OutT).
 
         map_multiple(I, O) :- map_plus_one(I, O).
         map_multiple(I, O) :- map_plus_ten(I, O).

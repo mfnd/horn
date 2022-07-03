@@ -10,7 +10,7 @@ char = {
 }
 
 operators = {
-    "+" | "-" | "*" | "/"
+    "\\+" | "+" | "-" | "**" | "*" | "/" | "^" | "<" | ">" | "=" | "=:="
 }
 atom = @{ (ASCII_ALPHA_LOWER ~ ( "_" | ASCII_ALPHANUMERIC)*) | operators }
 variable = @{ ASCII_ALPHA_UPPER ~ ASCII_ALPHANUMERIC*}
@@ -21,8 +21,14 @@ structure = { atom ~ "(" ~ terms ~ ")" }
 list_tail = { "|" ~ variable }
 list = { "[" ~ terms?  ~  list_tail? ~ "]"  }
 
-term = {
+infix_expression = { basic_term ~ (atom ~ basic_term)+ }
+
+basic_term = {
     structure | list | number | atom | variable | string
+}
+
+term = _{
+    infix_expression | basic_term
 }
 
 terms = _{

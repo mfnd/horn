@@ -1,6 +1,6 @@
 use std::{ops::Add, collections::{HashSet, HashMap}, hash::Hash, mem, rc::Rc};
 
-use crate::{parser::{CFGNode, Structure, Term, ListExpr}, vm::{Instruction, Value, RuleInfo}};
+use crate::{parser::{CFGNode, Structure, Term, ListExpr, OperatorType, PrecedenceMap, DEFAULT_PRECEDENCES, InfixExpr}, vm::{Instruction, Value, RuleInfo}};
 
 
 #[derive(Debug)]
@@ -38,19 +38,25 @@ impl Module {
 
 }
 
-pub struct IRGen {
+pub struct IRGen<'a> {
     curr_module: Module,
     code: Vec<Instruction>,
-    variables: Vec<String>
+    variables: Vec<String>,
+    precedences: &'a PrecedenceMap<'a>
 }
 
-impl IRGen {
+impl<'a> IRGen<'a> {
 
     pub fn new() -> Self {
+        Self::with_precedences(&DEFAULT_PRECEDENCES)
+    }
+
+    pub fn with_precedences(precedences: &'a PrecedenceMap) -> Self {
         IRGen {
             curr_module: Module::new(),
             code: Vec::new(),
-            variables: Vec::new()
+            variables: Vec::new(),
+            precedences
         }
     }
 
@@ -131,6 +137,7 @@ impl IRGen {
                     self.create_list(list_expr);
                     self.code.push(Instruction::PopUnifyRegister { register: idx as u32 });
                 }
+                Term::InfixExpr(terms) => todo!(),
             }
         }
 
@@ -189,64 +196,22 @@ impl IRGen {
                     self.create_list(list_expr);
                     self.code.push(Instruction::PopUnifyRegister { register: idx as u32 });
                 }
+                Term::InfixExpr(terms) => todo!(),
             }
         }
 
         for body_term in body {
             match body_term {
                 Term::Structure(s) => {
-                    let functor = self.get_or_create_atom(s.functor);
-                    let arity = s.params.len();
-
-                    for (idx, param) in s.params.iter().enumerate() {
-                        match param {
-                            &Term::Number(num) => self.code.push(
-                                Instruction::StoreRegisterConstant {
-                                    register: idx as u32, 
-                                    constant: Value::Int(num)
-                                }
-                            ),
-                            Term::String(s) => self.code.push(
-                                Instruction::StoreRegisterConstant {
-                                    register: idx as u32,
-                                    constant: Value::Str(Rc::from(s.as_ref()))
-                                }
-                            ),
-                            Term::Atom(atom) => todo!(),
-                            Term::Variable(variable) => {
-                                if let Some(var_idx) = self.variables.iter().position(|v| v == variable) {
-                                    self.code.push(
-                                        Instruction::StoreRegister {
-                                            register: idx as u32,
-                                            variable: var_idx as u32
-                                        }
-                                    )
-                                } else {
-                                    let var_idx = self.variables.len();
-                                    self.variables.push(variable.clone());
-                                    self.code.push(
-                                        Instruction::StoreRegister {
-                                            register: idx as u32,
-                                            variable: var_idx as u32
-                                        }
-                                    )
-                                }
-            
-                            },
-                            Term::Structure(structure) => {
-                                self.create_structure(structure);
-                                self.code.push(Instruction::Pop(idx as u32))
-                            }
-                            Term::Number(_) => todo!(),
-                            Term::List(list_expr) => { 
-                                self.create_list(list_expr);
-                                self.code.push(Instruction::Pop(idx as u32))
-                            }
-                        }
-                    }
-                    self.code.push(Instruction::NamedCall(functor, arity as u32));
-
+                    self.create_body(s)
                 },
+                Term::InfixExpr(expr) => {
+                    if let Term::Structure(s) = expr.parse(self.precedences){
+                        self.create_body(s)
+                    } else {
+                        unreachable!();
+                    }
+                }
                 _ => todo!()
             }
         }
@@ -301,6 +266,7 @@ impl IRGen {
                                 self.create_list(list_expr);
                                 self.code.push(Instruction::Pop(idx as u32))
                             },
+                            Term::InfixExpr(_) => todo!(),
                         }
                     }
                     self.code.push(Instruction::NamedCall(functor, arity as u32));
@@ -330,6 +296,60 @@ impl IRGen {
             atoms: query_module.atoms,
             atoms_by_symbol: query_module.atoms_by_symbol 
         }
+    }
+
+    pub fn create_body(&mut self, s: Structure) {
+        let functor = self.get_or_create_atom(s.functor);
+        let arity = s.params.len();
+
+        for (idx, param) in s.params.into_iter().enumerate() {
+            match param {
+                Term::Number(num) => self.code.push(
+                    Instruction::StoreRegisterConstant {
+                        register: idx as u32, 
+                        constant: Value::Int(num)
+                    }
+                ),
+                Term::String(s) => self.code.push(
+                    Instruction::StoreRegisterConstant {
+                        register: idx as u32,
+                        constant: Value::Str(Rc::from(s.as_ref()))
+                    }
+                ),
+                Term::Atom(atom) => todo!(),
+                Term::Variable(variable) => {
+                    if let Some(var_idx) = self.variables.iter().position(|v| v == &variable) {
+                        self.code.push(
+                            Instruction::StoreRegister {
+                                register: idx as u32,
+                                variable: var_idx as u32
+                            }
+                        )
+                    } else {
+                        let var_idx = self.variables.len();
+                        self.variables.push(variable.clone());
+                        self.code.push(
+                            Instruction::StoreRegister {
+                                register: idx as u32,
+                                variable: var_idx as u32
+                            }
+                        )
+                    }
+
+                },
+                Term::Structure(structure) => {
+                    self.create_structure(&structure);
+                    self.code.push(Instruction::Pop(idx as u32))
+                }
+                Term::Number(_) => todo!(),
+                Term::List(list_expr) => { 
+                    self.create_list(&list_expr);
+                    self.code.push(Instruction::Pop(idx as u32))
+                }
+                Term::InfixExpr(_) => todo!()
+            }
+        }
+        self.code.push(Instruction::NamedCall(functor, arity as u32));
     }
 
     pub fn create_structure(&mut self, s: &Structure) {
@@ -368,6 +388,7 @@ impl IRGen {
             }
             Term::Structure(s) => self.create_structure(s),
             Term::List(l) => self.create_list(l),
+            Term::InfixExpr(_) => todo!(),
         }
     }
 
