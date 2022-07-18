@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap};
 
 use pest::{iterators::Pair, Parser};
 
@@ -10,10 +10,11 @@ pub struct PrologParser;
 
 pub type PrologRule = Rule;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum CFGNode {
     ListTail(String),
     Term(Term),
+    Expr(Term),
     Fact(Structure),
     Rule(Structure, Vec<Term>),
     Query(Vec<Term>),
@@ -29,10 +30,11 @@ impl CFGNode {
     }
 
     pub fn parse_expression(expr: &str) -> Option<Self> {
-        let expr_pair = PrologParser::parse(PrologRule::infix_expression, expr).unwrap().next().unwrap();
+        let expr_pair = PrologParser::parse(PrologRule::expression, expr).unwrap().next().unwrap();
         Self::from(expr_pair)        
     }
 
+    
     pub fn parse_basic_term(expr: &str) -> Option<Self> {
         let expr_pair = PrologParser::parse(PrologRule::basic_term, expr).unwrap().next().unwrap();
         Self::from(expr_pair)        
@@ -42,6 +44,11 @@ impl CFGNode {
         let file = PrologParser::parse(PrologRule::file, file_content).unwrap().next().unwrap();
         println!("{:?}", file);
         Self::from(file)
+    }
+
+    pub fn parse_debug_terms(file_content: &str) {
+        let file = PrologParser::parse(PrologRule::terms, file_content).unwrap().next().unwrap();
+        println!("Parsed {:#?}", file);
     }
 
     pub fn parse_query(query_str: &str) -> Option<Self> {
@@ -127,18 +134,9 @@ impl CFGNode {
                     return None
                 }
             }
-            Rule::infix_expression => {
-                let pairs = pair.into_inner();
-                let mut terms: Vec<Term> = Vec::new();
-                for pair in pairs {
-                    let inner = CFGNode::from(pair)?;
-                    if let CFGNode::Term(term) = inner {
-                        terms.push(term);
-                    } else {
-                        return None
-                    }
-                }
-                CFGNode::Term(Term::InfixExpr(InfixExpr { terms }))
+            Rule::expression => {
+                let mut shuntyard_parser = ShuntyardParser::new();
+                CFGNode::Term(shuntyard_parser.parse(pair)?)
             }
             Rule::basic_term => CFGNode::from(pair.into_inner().next()?)?,
             Rule::fact => {
@@ -183,6 +181,125 @@ impl CFGNode {
         };
         Some(node)
     }
+
+    fn apply_shuntyard(pair: Pair<Rule>) -> Option<Term> {
+        let pairs = pair.into_inner();
+
+        let mut operand_stack: Vec<Term> = Vec::new();
+        let mut operator_stack: Vec<ShuntyardOperator> = Vec::new();
+        let mut args_stack: Vec<Term> = Vec::new();
+        let mut args_mode = false;
+
+        for (idx, pair) in pairs.enumerate() {
+            if pair.as_str() == "(" {
+                operator_stack.push(ShuntyardOperator::LeftPar);
+                println!("LPAR found");
+            }
+            else if pair.as_str() == "," {
+                operator_stack.push(ShuntyardOperator::Comma);
+                println!("COMMA found");
+            } 
+            else if pair.as_str() == ")" {
+                println!("RPAR found");
+                let mut left_par_found = false;
+                while let Some(top_op) = operator_stack.pop() {
+                    match top_op {
+                        ShuntyardOperator::LeftPar => {
+                            left_par_found = true;
+                            break
+                        }
+                        ShuntyardOperator::Comma => {
+                            if !args_mode {
+                                args_stack.push(operand_stack.pop().unwrap());
+                                args_mode = true;
+                            }
+                            args_stack.push(operand_stack.pop().unwrap());
+                        }
+                        ShuntyardOperator::Operator(next_op) => {
+                            let mut params: Vec<Term> = Vec::new();
+                            for _ in 0..next_op.arity() {
+                                let operand = operand_stack.pop().unwrap();
+                                params.insert(0, operand);
+                            }
+                            operand_stack.push(Term::Structure(Structure {
+                                functor: next_op.atom,
+                                params: params
+                            }));
+                        }
+                    }
+                }
+                assert!(left_par_found);
+                if args_mode {
+                    if let Term::Atom(functor) = operand_stack.pop().unwrap() {
+                        operand_stack.push(Term::Structure(Structure {
+                            functor: functor,
+                            params: std::mem::replace(&mut args_stack, Vec::new()).into_iter().rev().collect()
+                        }));
+                    }
+                    println!("Args: {:?}", args_stack);
+                    args_mode = false;
+                }
+            } else {
+                println!("{:?}", pair);
+                let inner = CFGNode::from(pair)?;
+                if let CFGNode::Term(term) = inner {
+                    match term {
+                        Term::Atom(atom) => {
+                            println!("Atom: {}", atom);
+                            if let Some(new_op) = DEFAULT_PRECEDENCES.get(atom.as_str()) {
+                                while let Some(ShuntyardOperator::Operator(top_op)) = operator_stack.last() {
+                                    if new_op.precedence > top_op.precedence 
+                                        || (new_op.op_type == OperatorType::YFX && new_op.precedence == top_op.precedence) {
+                                        let operator = match operator_stack.pop()? {
+                                            ShuntyardOperator::Operator(op) => op,
+                                            _ => return None
+                                        };
+                                        let mut params: Vec<Term> = Vec::new();
+                                        for _ in 0..operator.arity() {
+                                            let operand = operand_stack.pop().unwrap();
+                                            params.insert(0, operand);
+                                        }
+                                        operand_stack.push(Term::Structure(Structure {
+                                            functor: operator.atom,
+                                            params: params
+                                        }));
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                operator_stack.push(ShuntyardOperator::Operator(new_op.clone()));
+                            }
+                            else {
+                                operand_stack.push(Term::Atom(atom));
+                            }
+                        }
+                        other => {
+                            operand_stack.push(other);
+                        }
+                    }
+                } else {
+                    return None
+                }
+            }
+        }
+
+        while let Some(ShuntyardOperator::Operator(operator)) = operator_stack.pop() {
+            println!("Top atom: {:?}", operator);
+            let mut params: Vec<Term> = Vec::new();
+            for _ in 0..operator.arity() {
+                let operand = operand_stack.pop().unwrap();
+                params.insert(0, operand);
+            }
+            operand_stack.push(Term::Structure(Structure {
+                functor: operator.atom,
+                params: params
+            }));
+        }
+
+        assert!(operand_stack.len() == 1);
+        assert!(operator_stack.len() == 0);
+        operand_stack.pop()
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -193,7 +310,6 @@ pub enum Term {
     Variable(String),
     Structure(Structure),
     List(ListExpr),
-    InfixExpr(InfixExpr)
 }
 
 #[derive(Debug, PartialEq)]
@@ -260,69 +376,217 @@ lazy_static! {
     );
 }
 
-#[derive(Debug, PartialEq)]
-pub struct InfixExpr {
-    terms: Vec<Term>
+
+#[derive(Debug)]
+enum ShuntyardOperator {
+    LeftPar,
+    Comma,
+    Operator(Operator),
 }
 
-impl InfixExpr {
 
-    pub fn parse_with_defaults(self) -> Term {
-        self.parse(&DEFAULT_PRECEDENCES)
+struct ShuntyardParser {
+    operand_stack : Vec<(Term, usize)>,
+    operator_stack: Vec<(ShuntyardOperator, usize)>,
+    pos: usize
+}
+
+impl ShuntyardParser {
+
+    pub fn new() -> Self {
+        ShuntyardParser { 
+            operand_stack: Vec::new(), 
+            operator_stack: Vec::new(), 
+            pos: 0
+        }
     }
 
-    pub fn parse(self, precedences: &PrecedenceMap) -> Term {
-        let mut stack: Vec<Term> = Vec::new();
-        let mut operator_stack: Vec<Operator> = Vec::new();
-        for term in self.terms {
-            match term {
-                Term::Atom(atom) => {
-                    println!("Atom: {}", atom);
-                    if let Some(new_op) = precedences.get(atom.as_str()) {
-                        while let Some(top_op) = operator_stack.last() {
-                            if new_op.precedence > top_op.precedence 
-                                || (new_op.op_type == OperatorType::YFX && new_op.precedence == top_op.precedence) {
-                                let operator = operator_stack.pop().unwrap();
-                                let mut params: Vec<Term> = Vec::new();
-                                for _ in 0..operator.arity() {
-                                    let operand = stack.pop().unwrap();
-                                    params.insert(0, operand);
-                                }
-                                stack.push(Term::Structure(Structure {
-                                    functor: operator.atom,
-                                    params: params
-                                }));
-                            } else {
-                                break;
-                            }
+    fn push_operator(&mut self, operator: ShuntyardOperator) {
+        self.operator_stack.push((operator, self.pos));
+    }
+
+    fn push_operand(&mut self, operand: Term) {
+        self.operand_stack.push((operand, self.pos));
+    }
+
+    fn pop_operand(&mut self) -> Option<Term> {
+        match self.operand_stack.pop() {
+            Some((term, _)) => Some(term),
+            None => None,
+        }
+    }
+
+    fn pop_unary_functor(&mut self) -> Option<Term> {
+        let latest_operand_pos: usize = match &self.operand_stack.last() {
+            Some((Term::Atom(_), pos)) => *pos,
+            _ => 0,
+        };
+        let latest_operator_pos: usize = match &self.operator_stack.last() {
+            Some((_, pos)) => *pos,
+            None => 0
+        };
+        if latest_operand_pos > latest_operator_pos {
+            self.pop_operand()
+        } else {
+            None
+        }
+    }
+
+    fn pop_argument(&mut self) -> Term {
+        let latest_operand_pos: usize = match &self.operand_stack.last() {
+            Some((_, pos)) => *pos,
+            None => 0,
+        };
+        let latest_operator_pos: usize = match &self.operator_stack.last() {
+            Some((_, pos)) => *pos,
+            None => 0
+        };
+        if latest_operator_pos > latest_operand_pos {
+            match self.operator_stack.pop().unwrap().0 {
+                ShuntyardOperator::LeftPar => todo!(),
+                ShuntyardOperator::Comma => todo!(),
+                ShuntyardOperator::Operator(op) => Term::Atom(op.atom),
+            }
+        } else {
+            self.operand_stack.pop().unwrap().0
+        }
+    } 
+
+    pub fn parse(&mut self, pair: Pair<Rule>) -> Option<Term> {
+        let pairs = pair.into_inner();
+
+        let mut args_stack: Vec<Term> = Vec::new();
+        let mut args_mode = false;
+
+        for (idx, pair) in pairs.enumerate() {
+            self.pos = idx + 1;
+            if pair.as_str() == "(" {
+                self.push_operator(ShuntyardOperator::LeftPar);
+                //println!("LPAR found");
+            }
+            else if pair.as_str() == "," {
+                self.push_operator(ShuntyardOperator::Comma);
+                //println!("COMMA found");
+            } 
+            else if pair.as_str() == ")" {
+                //println!("RPAR found");
+                let mut left_par_found = false;
+                while let Some((top_op, _)) = self.operator_stack.pop() {
+                    match top_op {
+                        ShuntyardOperator::LeftPar => {
+                            left_par_found = true;
+                            break
                         }
-                        operator_stack.push(new_op.clone());
-                    }
-                    else {
-                        panic!("Undefined operator");
+                        ShuntyardOperator::Comma => {
+                            if !args_mode {
+                                let arg = self.pop_argument();
+                                args_stack.push(arg);
+                                args_mode = true;
+                            }
+                            args_stack.push(self.pop_argument());
+                        }
+                        ShuntyardOperator::Operator(next_op) => {
+                            let mut params: Vec<Term> = Vec::new();
+                            for _ in 0..next_op.arity() {
+                                let operand = self.pop_operand().unwrap();
+                                params.insert(0, operand);
+                            }
+                            self.push_operand(Term::Structure(Structure {
+                                functor: next_op.atom,
+                                params: params
+                            }));
+                        }
                     }
                 }
-                other => {
-                    stack.push(other);
+                assert!(left_par_found);
+                if args_mode {
+                    if let Term::Atom(functor) = self.pop_argument() {
+                        self.push_operand(Term::Structure(Structure {
+                            functor: functor,
+                            params: std::mem::replace(&mut args_stack, Vec::new()).into_iter().rev().collect()
+                        }));
+                    } else {
+                        panic!("Expected functor");
+                    }
+                    println!("Args: {:?}", args_stack);
+                    args_mode = false;
+                } else {
+                    println!("Operators {:?} Operands {:?}", self.operator_stack, self.operand_stack);
+                    let operand = self.pop_operand().unwrap();
+                    match self.pop_unary_functor() {
+                        Some(Term::Atom(functor)) => {
+                            self.push_operand(Term::Structure(Structure {
+                                functor: functor,
+                                params: vec![operand]
+                            }));
+                        }
+                        _ => self.push_operand(operand)
+                    }
+                }
+            } else {
+                println!("{:?}", pair);
+                let inner = CFGNode::from(pair)?;
+                if let CFGNode::Term(term) = inner {
+                    match term {
+                        Term::Atom(atom) => {
+                            println!("Atom: {}", atom);
+                            if let Some(new_op) = DEFAULT_PRECEDENCES.get(atom.as_str()) {
+                                while let Some((ShuntyardOperator::Operator(top_op), _)) = self.operator_stack.last() {
+                                    if new_op.precedence > top_op.precedence 
+                                        || (new_op.op_type == OperatorType::YFX && new_op.precedence == top_op.precedence) {
+                                        let operator = match self.operator_stack.pop()? {
+                                            (ShuntyardOperator::Operator(op), _) => op,
+                                            _ => return None
+                                        };
+                                        let mut params: Vec<Term> = Vec::new();
+                                        for _ in 0..operator.arity() {
+                                            let operand = self.pop_operand().unwrap();
+                                            params.insert(0, operand);
+                                        }
+                                        self.push_operand(Term::Structure(Structure {
+                                            functor: operator.atom,
+                                            params: params
+                                        }));
+                                    } else {
+                                        break;
+                                    }
+                                }
+                                self.push_operator(ShuntyardOperator::Operator(new_op.clone()));
+                            }
+                            else {
+                                self.push_operand(Term::Atom(atom));
+                            }
+                        }
+                        other => {
+                            self.push_operand(other);
+                        }
+                    }
+                } else {
+                    return None
                 }
             }
         }
 
-        while let Some(operator) = operator_stack.pop() {
+        while let Some((ShuntyardOperator::Operator(operator), _)) = self.operator_stack.pop() {
             println!("Top atom: {:?}", operator);
             let mut params: Vec<Term> = Vec::new();
             for _ in 0..operator.arity() {
-                let operand = stack.pop().unwrap();
+                let operand = self.pop_operand().unwrap();
                 params.insert(0, operand);
             }
-            stack.push(Term::Structure(Structure {
+            self.push_operand(Term::Structure(Structure {
                 functor: operator.atom,
                 params: params
             }));
         }
 
-        assert!(stack.len() == 1);
-        stack.pop().unwrap()
+        println!("Operand Stack: {:?}", self.operand_stack);
+        println!("Operator Stack: {:?}", self.operator_stack);
+
+        assert!(self.operand_stack.len() == 1);
+        assert!(self.operator_stack.len() == 0);
+
+        self.pop_operand()
     }
 
 }

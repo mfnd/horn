@@ -1,6 +1,6 @@
 use std::{ops::Add, collections::{HashSet, HashMap}, hash::Hash, mem, rc::Rc};
 
-use crate::{parser::{CFGNode, Structure, Term, ListExpr, OperatorType, PrecedenceMap, DEFAULT_PRECEDENCES, InfixExpr}, vm::{Instruction, Value, RuleInfo}};
+use crate::{parser::{CFGNode, Structure, Term, ListExpr, OperatorType, PrecedenceMap, DEFAULT_PRECEDENCES}, vm::{Instruction, Value, RuleInfo}};
 
 
 #[derive(Debug)]
@@ -137,7 +137,7 @@ impl<'a> IRGen<'a> {
                     self.create_list(list_expr);
                     self.code.push(Instruction::PopUnifyRegister { register: idx as u32 });
                 }
-                Term::InfixExpr(terms) => todo!(),
+                //Term::InfixExpr(terms) => todo!(),
             }
         }
 
@@ -196,7 +196,7 @@ impl<'a> IRGen<'a> {
                     self.create_list(list_expr);
                     self.code.push(Instruction::PopUnifyRegister { register: idx as u32 });
                 }
-                Term::InfixExpr(terms) => todo!(),
+                //Term::InfixExpr(terms) => todo!(),
             }
         }
 
@@ -205,13 +205,13 @@ impl<'a> IRGen<'a> {
                 Term::Structure(s) => {
                     self.create_body(s)
                 },
-                Term::InfixExpr(expr) => {
+                /*Term::InfixExpr(expr) => {
                     if let Term::Structure(s) = expr.parse(self.precedences){
                         self.create_body(s)
                     } else {
                         unreachable!();
                     }
-                }
+                }*/
                 _ => todo!()
             }
         }
@@ -266,7 +266,7 @@ impl<'a> IRGen<'a> {
                                 self.create_list(list_expr);
                                 self.code.push(Instruction::Pop(idx as u32))
                             },
-                            Term::InfixExpr(_) => todo!(),
+                            //Term::InfixExpr(_) => todo!(),
                         }
                     }
                     self.code.push(Instruction::NamedCall(functor, arity as u32));
@@ -346,7 +346,7 @@ impl<'a> IRGen<'a> {
                     self.create_list(&list_expr);
                     self.code.push(Instruction::Pop(idx as u32))
                 }
-                Term::InfixExpr(_) => todo!()
+                //Term::InfixExpr(_) => todo!()
             }
         }
         self.code.push(Instruction::NamedCall(functor, arity as u32));
@@ -388,7 +388,7 @@ impl<'a> IRGen<'a> {
             }
             Term::Structure(s) => self.create_structure(s),
             Term::List(l) => self.create_list(l),
-            Term::InfixExpr(_) => todo!(),
+            //Term::InfixExpr(_) => todo!(),
         }
     }
 

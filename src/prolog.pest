@@ -15,20 +15,23 @@ operators = {
 atom = @{ (ASCII_ALPHA_LOWER ~ ( "_" | ASCII_ALPHANUMERIC)*) | operators }
 variable = @{ ASCII_ALPHA_UPPER ~ ASCII_ALPHANUMERIC*}
 
-structure = { atom ~ "(" ~ terms ~ ")" }
+structure = { atom ~ "(" ~ term ~ ( "," ~ term)* ~ ")" }
 
+lpar = { "(" }
+rpar = { ")" }
+comma = { "," }
 
 list_tail = { "|" ~ variable }
 list = { "[" ~ terms?  ~  list_tail? ~ "]"  }
 
-infix_expression = { basic_term ~ (atom ~ basic_term)+ }
+expression = { ( basic_term | lpar ~ expression ~  ( comma ~ expression)*  ~ rpar)+ }
 
 basic_term = {
-    structure | list | number | atom | variable | string
+    list | number | atom | variable | string
 }
 
 term = _{
-    infix_expression | basic_term
+    expression
 }
 
 terms = _{
