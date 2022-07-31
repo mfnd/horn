@@ -4,14 +4,14 @@ use std::{fs, fmt};
 use crate::debugln;
 use crate::ir_gen::IRGen;
 use crate::vm::{Value, PrologVM};
-use crate::parser::{PrologParser, PrologRule, CFGNode};
+use crate::parser::{PestPrologParser, PrologRule, CFGNode, PrologParser};
 
 pub type BuiltIn = fn(&mut PrologVM) -> bool;
 
 pub fn consult(vm: &mut PrologVM) -> bool {
     if let Value::Str(file_path) = vm.read_register(0) {
         let file = fs::read_to_string(&*file_path).unwrap();
-        let file_node = CFGNode::parse_file(&file).expect("Couldn't parse");
+        let file_node = PrologParser::new().parse_file(&file).expect("Couldn't parse");
         let mut ir_gen = IRGen::new();
         let module = ir_gen.generate(file_node);
         vm.load_module(module);

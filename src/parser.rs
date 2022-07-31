@@ -1,4 +1,4 @@
-use std::{collections::HashMap};
+use std::{collections::HashMap, fs::OpenOptions, fmt::Write};
 
 use pest::{iterators::Pair, Parser};
 
@@ -6,62 +6,69 @@ use crate::vm::List;
 
 #[derive(Parser)]
 #[grammar = "prolog.pest"]
-pub struct PrologParser;
+pub struct PestPrologParser;
 
 pub type PrologRule = Rule;
 
-#[derive(Debug, PartialEq)]
-pub enum CFGNode {
-    ListTail(String),
-    Term(Term),
-    Expr(Term),
-    Fact(Structure),
-    Rule(Structure, Vec<Term>),
-    Query(Vec<Term>),
-    File(Vec<CFGNode>),
-    EOF
+
+pub struct PrologParser {
+    operators: PrecedenceMap
 }
 
-impl CFGNode {
-
-    pub fn parse_file(file_content: &str) -> Option<Self> {
-        let file = PrologParser::parse(PrologRule::file, file_content).unwrap().next().unwrap();
-        Self::from(file)
+impl PrologParser {
+    pub fn new() -> Self {
+        PrologParser { 
+            operators: DEFAULT_PRECEDENCES.clone() 
+        }
     }
 
-    pub fn parse_expression(expr: &str) -> Option<Self> {
-        let expr_pair = PrologParser::parse(PrologRule::expression, expr).unwrap().next().unwrap();
-        Self::from(expr_pair)        
+    pub fn with_operators(operators: &PrecedenceMap) -> Self {
+        PrologParser { operators: operators.clone() }
+
+    }
+
+    pub fn add_operator(&mut self, operator: Operator) {
+        self.operators.insert(operator.atom.clone(), operator);
+    }
+
+    pub fn parse_file(&self, file_content: &str) -> Option<CFGNode> {
+        let file = PestPrologParser::parse(PrologRule::file, file_content).unwrap().next().unwrap();
+        self.from(file)
+    }
+
+    pub fn parse_expression(&self, expr: &str) -> Option<CFGNode> {
+        let expr_pair = PestPrologParser::parse(PrologRule::term_only, expr).unwrap().next().unwrap();
+        self.from(expr_pair)        
     }
 
     
-    pub fn parse_basic_term(expr: &str) -> Option<Self> {
-        let expr_pair = PrologParser::parse(PrologRule::basic_term, expr).unwrap().next().unwrap();
-        Self::from(expr_pair)        
+    pub fn parse_basic_term(&self, expr: &str) -> Option<CFGNode> {
+        let expr_pair = PestPrologParser::parse(PrologRule::basic_term, expr).unwrap().next().unwrap();
+        self.from(expr_pair)        
     }
 
-    pub fn parse_debug(file_content: &str) -> Option<Self> {
-        let file = PrologParser::parse(PrologRule::file, file_content).unwrap().next().unwrap();
+    pub fn parse_debug(&self, file_content: &str) -> Option<CFGNode> {
+        let file = PestPrologParser::parse(PrologRule::file, file_content).unwrap().next().unwrap();
         println!("{:?}", file);
-        Self::from(file)
+        self.from(file)
     }
 
-    pub fn parse_debug_terms(file_content: &str) {
-        let file = PrologParser::parse(PrologRule::terms, file_content).unwrap().next().unwrap();
+    pub fn parse_debug_terms(&self, file_content: &str) {
+        let file = PestPrologParser::parse(PrologRule::terms, file_content).unwrap().next().unwrap();
         println!("Parsed {:#?}", file);
     }
 
-    pub fn parse_query(query_str: &str) -> Option<Self> {
-        let query = PrologParser::parse(PrologRule::query, query_str).unwrap().next().unwrap();
-        Self::from(query)
+    pub fn parse_query(&self, query_str: &str) -> Option<CFGNode> {
+        let query = PestPrologParser::parse(PrologRule::query, query_str).unwrap().next().unwrap();
+        self.from(query)
     }
 
-    pub fn from(pair: Pair<Rule>) -> Option<Self> {
+    pub fn from(&self, pair: Pair<Rule>) -> Option<CFGNode> {
         let node= match pair.as_rule() {
             Rule::file => {
                 let mut results: Vec<CFGNode> = Vec::new();
                 for p in pair.into_inner() {
-                    let node = CFGNode::from(p).unwrap();
+                    let node = self.from(p).unwrap();
                     if let CFGNode::EOF = node {
                         break;
                     } else {
@@ -88,14 +95,20 @@ impl CFGNode {
             },
             Rule::structure => {
                 let mut pairs = pair.into_inner();
-                let functor_pair = pairs.next()?;
-                let functor = match functor_pair.as_rule() {
-                    Rule::atom => String::from(functor_pair.as_str()),
+                let struct_head = pairs.next()?;
+                let functor = match struct_head.as_rule() {
+                    Rule::struct_head => {
+                        let atom_pair = struct_head.into_inner().next()?;  
+                        match atom_pair.as_rule() {
+                            Rule::atom => String::from(atom_pair.as_str()),
+                            _ => return None
+                        }
+                    },
                     _ => return None,
                 };
                 let mut params: Vec<Term> = Vec::new();
                 for p in pairs {
-                    if let CFGNode::Term(term) = CFGNode::from(p)? {
+                    if let CFGNode::Term(term) = self.from(p)? {
                         params.push(term);
                     } else {
                         return None
@@ -113,7 +126,7 @@ impl CFGNode {
                 let mut members: Vec<Term> = Vec::new();
                 let mut tail = None;
                 for p in pair.into_inner() {
-                    match CFGNode::from(p)? {
+                    match self.from(p)? {
                         CFGNode::Term(term) => members.push(term),
                         CFGNode::ListTail(term) => tail = Some(Box::from(Term::Variable(term))),
                         _ => unreachable!()
@@ -127,20 +140,23 @@ impl CFGNode {
                 ))
             }
             Rule::list_tail => {
-                let variable = CFGNode::from(pair.into_inner().next()?)?;
+                let variable = self.from(pair.into_inner().next()?)?;
                 if let CFGNode::Term(Term::Variable(var)) = variable {
                     CFGNode::ListTail(var)
                 } else{
                     return None
                 }
             }
-            Rule::expression => {
-                let mut shuntyard_parser = ShuntyardParser::new();
-                CFGNode::Term(shuntyard_parser.parse(pair)?)
+            Rule::paren_expr => {
+                self.from(pair.into_inner().next()?)?
             }
-            Rule::basic_term => CFGNode::from(pair.into_inner().next()?)?,
+            Rule::expression => {
+                let mut shuntyard_parser = ShuntingyardParser::new();
+                CFGNode::Term(shuntyard_parser.parse(pair, &self)?)
+            }
+            Rule::basic_term => self.from(pair.into_inner().next()?)?,
             Rule::fact => {
-                let inner = CFGNode::from(pair.into_inner().next()?)?;
+                let inner = self.from(pair.into_inner().next()?)?;
                 if let CFGNode::Term(Term::Structure(term)) = inner {
                     CFGNode::Fact(term)
                 } else {
@@ -149,7 +165,7 @@ impl CFGNode {
             }
             Rule::rule => {
                 let mut pairs = pair.into_inner();
-                let head_node = CFGNode::from(pairs.next()?)?;
+                let head_node = self.from(pairs.next()?)?;
                 let head = match head_node {
                     CFGNode::Term(Term::Structure(h)) => h,
                     _ => return None
@@ -157,7 +173,7 @@ impl CFGNode {
 
                 let mut body: Vec<Term> = Vec::new();
                 for p in pairs {
-                    if let CFGNode::Term(term) = CFGNode::from(p)? {
+                    if let CFGNode::Term(term) = self.from(p)? {
                         body.push(term);
                     } else {
                         return None
@@ -168,7 +184,7 @@ impl CFGNode {
             Rule::query => {
                 let mut terms: Vec<Term> = Vec::new();
                 for p in pair.into_inner() {
-                    if let CFGNode::Term(term) = CFGNode::from(p)? {
+                    if let CFGNode::Term(term) = self.from(p)? {
                         terms.push(term);
                     } else {
                         return None
@@ -181,128 +197,20 @@ impl CFGNode {
         };
         Some(node)
     }
-
-    fn apply_shuntyard(pair: Pair<Rule>) -> Option<Term> {
-        let pairs = pair.into_inner();
-
-        let mut operand_stack: Vec<Term> = Vec::new();
-        let mut operator_stack: Vec<ShuntyardOperator> = Vec::new();
-        let mut args_stack: Vec<Term> = Vec::new();
-        let mut args_mode = false;
-
-        for (idx, pair) in pairs.enumerate() {
-            if pair.as_str() == "(" {
-                operator_stack.push(ShuntyardOperator::LeftPar);
-                println!("LPAR found");
-            }
-            else if pair.as_str() == "," {
-                operator_stack.push(ShuntyardOperator::Comma);
-                println!("COMMA found");
-            } 
-            else if pair.as_str() == ")" {
-                println!("RPAR found");
-                let mut left_par_found = false;
-                while let Some(top_op) = operator_stack.pop() {
-                    match top_op {
-                        ShuntyardOperator::LeftPar => {
-                            left_par_found = true;
-                            break
-                        }
-                        ShuntyardOperator::Comma => {
-                            if !args_mode {
-                                args_stack.push(operand_stack.pop().unwrap());
-                                args_mode = true;
-                            }
-                            args_stack.push(operand_stack.pop().unwrap());
-                        }
-                        ShuntyardOperator::Operator(next_op) => {
-                            let mut params: Vec<Term> = Vec::new();
-                            for _ in 0..next_op.arity() {
-                                let operand = operand_stack.pop().unwrap();
-                                params.insert(0, operand);
-                            }
-                            operand_stack.push(Term::Structure(Structure {
-                                functor: next_op.atom,
-                                params: params
-                            }));
-                        }
-                    }
-                }
-                assert!(left_par_found);
-                if args_mode {
-                    if let Term::Atom(functor) = operand_stack.pop().unwrap() {
-                        operand_stack.push(Term::Structure(Structure {
-                            functor: functor,
-                            params: std::mem::replace(&mut args_stack, Vec::new()).into_iter().rev().collect()
-                        }));
-                    }
-                    println!("Args: {:?}", args_stack);
-                    args_mode = false;
-                }
-            } else {
-                println!("{:?}", pair);
-                let inner = CFGNode::from(pair)?;
-                if let CFGNode::Term(term) = inner {
-                    match term {
-                        Term::Atom(atom) => {
-                            println!("Atom: {}", atom);
-                            if let Some(new_op) = DEFAULT_PRECEDENCES.get(atom.as_str()) {
-                                while let Some(ShuntyardOperator::Operator(top_op)) = operator_stack.last() {
-                                    if new_op.precedence > top_op.precedence 
-                                        || (new_op.op_type == OperatorType::YFX && new_op.precedence == top_op.precedence) {
-                                        let operator = match operator_stack.pop()? {
-                                            ShuntyardOperator::Operator(op) => op,
-                                            _ => return None
-                                        };
-                                        let mut params: Vec<Term> = Vec::new();
-                                        for _ in 0..operator.arity() {
-                                            let operand = operand_stack.pop().unwrap();
-                                            params.insert(0, operand);
-                                        }
-                                        operand_stack.push(Term::Structure(Structure {
-                                            functor: operator.atom,
-                                            params: params
-                                        }));
-                                    } else {
-                                        break;
-                                    }
-                                }
-                                operator_stack.push(ShuntyardOperator::Operator(new_op.clone()));
-                            }
-                            else {
-                                operand_stack.push(Term::Atom(atom));
-                            }
-                        }
-                        other => {
-                            operand_stack.push(other);
-                        }
-                    }
-                } else {
-                    return None
-                }
-            }
-        }
-
-        while let Some(ShuntyardOperator::Operator(operator)) = operator_stack.pop() {
-            println!("Top atom: {:?}", operator);
-            let mut params: Vec<Term> = Vec::new();
-            for _ in 0..operator.arity() {
-                let operand = operand_stack.pop().unwrap();
-                params.insert(0, operand);
-            }
-            operand_stack.push(Term::Structure(Structure {
-                functor: operator.atom,
-                params: params
-            }));
-        }
-
-        assert!(operand_stack.len() == 1);
-        assert!(operator_stack.len() == 0);
-        operand_stack.pop()
-    }
 }
 
 #[derive(Debug, PartialEq)]
+pub enum CFGNode {
+    ListTail(String),
+    Term(Term),
+    Fact(Structure),
+    Rule(Structure, Vec<Term>),
+    Query(Vec<Term>),
+    File(Vec<CFGNode>),
+    EOF
+}
+
+#[derive(PartialEq, Clone)]
 pub enum Term {
     Number(i64),
     Atom(String),
@@ -312,13 +220,45 @@ pub enum Term {
     List(ListExpr),
 }
 
-#[derive(Debug, PartialEq)]
+impl std::fmt::Debug for Term {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Term::Number(num) => num.fmt(f),
+            Term::Atom(atom) => atom.fmt(f),
+            Term::String(string) => string.fmt(f),
+            Term::Variable(var) => var.fmt(f),
+            Term::Structure(structure) => structure.fmt(f),
+            Term::List(list_expr) => list_expr.fmt(f),
+        }
+    }
+}
+
+
+#[derive(PartialEq, Clone)]
 pub struct Structure {
     pub functor: String,
     pub params: Vec<Term>
 }
 
-#[derive(Debug, PartialEq)]
+impl std::fmt::Debug for Structure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.functor)?;
+        f.write_char('(')?;
+        let mut started = false;
+        for param in &self.params {
+            if started {
+                f.write_str(" ,")?;
+            } else {
+                started = true;
+            }
+            param.fmt(f)?;
+        }
+        f.write_char(')')?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq, Clone)]
 pub struct ListExpr {
     pub heads: Vec<Term>,
     pub tail: Option<Box<Term>>
@@ -336,72 +276,162 @@ pub enum OperatorType {
     YF
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum InfixType {
+    XFX,
+    XFY,
+    YFX
+}
+
+
+#[derive(Debug, Clone, Copy)]
+pub enum PrefixType {
+    FX,
+    FY
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum PostfixType {
+    XF,
+    YF
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Associativity {
+    Left,
+    Right,
+    None
+}
+
+
+#[derive(Debug, Clone, Copy)]
+pub struct OperatorInfo<T> {
+    pub precedence: u32,
+    pub op_type: T
+}
+
+impl OperatorInfo<InfixType> {
+    pub fn associativity(&self) -> Associativity {
+        match self.op_type {
+            InfixType::XFX => Associativity::None,
+            InfixType::XFY => Associativity::Right,
+            InfixType::YFX => Associativity::Left,
+        }
+    }
+}
+
+impl OperatorInfo<PostfixType> {
+    pub fn associativity(&self) -> Associativity {
+        match self.op_type {
+            PostfixType::XF => Associativity::None,
+            PostfixType::YF => Associativity::Left,
+        }
+    }
+}
+
+impl OperatorInfo<PrefixType> {
+    pub fn associativity(&self) -> Associativity {
+        match self.op_type {
+            PrefixType::FX => Associativity::None,
+            PrefixType::FY => Associativity::Right,
+        }
+    }
+}
+
+
 #[derive(Debug, Clone)]
 pub struct Operator {
-    atom: String,
-    precedence: u32,
-    op_type: OperatorType
+    pub atom: String,
+    pub prefix: Option<OperatorInfo<PrefixType>>,
+    pub infix: Option<OperatorInfo<InfixType>>,
+    pub postfix: Option<OperatorInfo<PostfixType>>
 }
 
 impl Operator {
 
-    fn new(atom: &str, precedence: u32, op_type: OperatorType) -> Self {
-        Operator { atom: String::from(atom), precedence, op_type }
-    }
-
-    fn arity(&self) -> usize {
-        match self.op_type {
-            OperatorType::YFX | OperatorType::XFY | OperatorType::XFX => 2,
-            _ => 1
+    pub fn new_prefix(atom: &str, precedence: u32, op_type: PrefixType) -> Self {
+        Operator { 
+            atom: String::from(atom), 
+            prefix: Some(OperatorInfo { precedence, op_type }),
+            infix: None,
+            postfix: None
         }
     }
 
+    pub fn new_postfix(atom: &str, precedence: u32, op_type: PostfixType) -> Self {
+        Operator { 
+            atom: String::from(atom), 
+            prefix: None,
+            infix: None,
+            postfix: Some(OperatorInfo { precedence, op_type })
+        }
+    }
+
+    pub fn new_infix(atom: &str, precedence: u32, op_type: InfixType) -> Self {
+        Operator { 
+            atom: String::from(atom), 
+            prefix: None,
+            infix: Some(OperatorInfo { precedence, op_type }),
+            postfix: None
+        }
+    }
 }
 
-pub type PrecedenceMap<'a> = HashMap<&'a str, Operator>;
+
+pub type PrecedenceMap = HashMap<String, Operator>;
 
 lazy_static! {
 
-    pub static ref DEFAULT_PRECEDENCES: PrecedenceMap<'static> = PrecedenceMap::from(
-        [
-            ("\\+", Operator::new("\\+", 900, OperatorType::FY)),
-            ("is", Operator::new("is", 700, OperatorType::XFX)),
-            ("+", Operator::new("+", 500, OperatorType::YFX)),
-            ("-", Operator::new("-", 500, OperatorType::YFX)),
-            ("*", Operator::new("*", 400, OperatorType::YFX)),
-            ("/", Operator::new("/", 400, OperatorType::YFX)),
-            ("^", Operator::new("^", 200, OperatorType::XFY)),
-            ("^", Operator::new("^", 200, OperatorType::XFY)),
-        ]
-    );
+    pub static ref DEFAULT_PRECEDENCES: PrecedenceMap = {
+        let mut precedences = PrecedenceMap::new();
+        let operators = [
+            ("\\+", Operator::new_prefix("\\+", 900, PrefixType::FY)),
+            ("is", Operator::new_infix("is", 700, InfixType::XFX)),
+            ("==", Operator::new_infix("==", 700, InfixType::XFX)),
+            ("+", Operator {
+                atom: String::from("+"),
+                infix: Some(OperatorInfo { precedence: 500, op_type: InfixType::YFX }),
+                prefix: Some(OperatorInfo { precedence: 200, op_type: PrefixType::FY}),
+                postfix: None
+            }),
+            ("-", Operator::new_infix("-", 500, InfixType::YFX)),
+            ("*", Operator::new_infix("*", 400, InfixType::YFX)),
+            ("/", Operator::new_infix("/", 400, InfixType::YFX)),
+            ("^", Operator::new_infix("^", 200, InfixType::XFY)),
+            ("^", Operator::new_infix("^", 200, InfixType::XFY)),
+        ];
+        for (atom, op) in operators {
+            precedences.insert(String::from(atom), op);
+        }
+        precedences
+    };
 }
 
-
 #[derive(Debug)]
-enum ShuntyardOperator {
+enum ShuntingyardOperator {
     LeftPar,
     Comma,
     Operator(Operator),
 }
 
 
-struct ShuntyardParser {
+struct ShuntingyardParser {
     operand_stack : Vec<(Term, usize)>,
-    operator_stack: Vec<(ShuntyardOperator, usize)>,
+    operator_stack: Vec<(ShuntingyardOperator, usize)>,
     pos: usize
 }
 
-impl ShuntyardParser {
+impl ShuntingyardParser {
 
     pub fn new() -> Self {
-        ShuntyardParser { 
-            operand_stack: Vec::new(), 
-            operator_stack: Vec::new(), 
+        ShuntingyardParser { 
+            operand_stack: Vec::new(),
+            operator_stack: Vec::new(),
             pos: 0
         }
     }
 
-    fn push_operator(&mut self, operator: ShuntyardOperator) {
+    fn push_operator(&mut self, operator: ShuntingyardOperator) {
         self.operator_stack.push((operator, self.pos));
     }
 
@@ -416,23 +446,7 @@ impl ShuntyardParser {
         }
     }
 
-    fn pop_unary_functor(&mut self) -> Option<Term> {
-        let latest_operand_pos: usize = match &self.operand_stack.last() {
-            Some((Term::Atom(_), pos)) => *pos,
-            _ => 0,
-        };
-        let latest_operator_pos: usize = match &self.operator_stack.last() {
-            Some((_, pos)) => *pos,
-            None => 0
-        };
-        if latest_operand_pos > latest_operator_pos {
-            self.pop_operand()
-        } else {
-            None
-        }
-    }
-
-    fn pop_argument(&mut self) -> Term {
+    fn is_last_token_operator(&self) -> bool{
         let latest_operand_pos: usize = match &self.operand_stack.last() {
             Some((_, pos)) => *pos,
             None => 0,
@@ -441,147 +455,255 @@ impl ShuntyardParser {
             Some((_, pos)) => *pos,
             None => 0
         };
-        if latest_operator_pos > latest_operand_pos {
-            match self.operator_stack.pop().unwrap().0 {
-                ShuntyardOperator::LeftPar => todo!(),
-                ShuntyardOperator::Comma => todo!(),
-                ShuntyardOperator::Operator(op) => Term::Atom(op.atom),
+        return latest_operator_pos > latest_operand_pos
+    }
+
+    fn apply_top(&mut self) {
+        let should_be_postfix = self.is_last_token_operator();
+        if let Some((ShuntingyardOperator::Operator(operator), pos)) = self.operator_stack.pop() {
+            if should_be_postfix {
+                match operator.postfix {
+                    Some(_) => {
+                        let operand = self.pop_operand().unwrap();
+                        self.push_operand(Term::Structure(
+                            Structure { 
+                                functor: operator.atom,
+                                params: vec![operand]
+                            }
+                        ));
+                    }
+                    None => unreachable!("Postfix for {:?}", operator.atom),
+                }
+            } else {
+                let right_operand = self.pop_operand().unwrap();
+                let should_be_prefix = self.is_last_token_operator() || self.operand_stack.is_empty();
+                if should_be_prefix {
+                    match operator.prefix {
+                        Some(_) => {
+                            self.push_operand(Term::Structure(
+                                Structure { 
+                                    functor: operator.atom,
+                                    params: vec![right_operand]
+                                }
+                            ));
+                        }
+                        None => unreachable!("Prefix for {:?}", operator.atom),
+                    }
+                } else {
+                    match operator.infix {
+                        Some(_) => {
+                            let left_operand = self.pop_operand().unwrap();
+                            self.push_operand(Term::Structure(
+                                Structure { 
+                                    functor: operator.atom,
+                                    params: vec![left_operand, right_operand]
+                                }
+                            ));
+                            
+                        }
+                        None => unreachable!("Infix for {:?}", operator.atom)
+                    }
+                }
             }
-        } else {
-            self.operand_stack.pop().unwrap().0
         }
-    } 
+    }
 
-    pub fn parse(&mut self, pair: Pair<Rule>) -> Option<Term> {
+    fn handle_operator(&mut self, operator: Operator) -> bool {
+        if let Some((ShuntingyardOperator::Operator(last_op), pos)) = &self.operator_stack.last() {
+            if let Some(op_prefix) = operator.prefix {
+                if self.is_last_token_operator() {
+                    if let Some(last_op_infix) = last_op.infix {
+                        match last_op_infix.op_type {
+                            InfixType::XFX | InfixType::YFX => {
+                                if op_prefix.precedence >= last_op_infix.precedence {
+                                    panic!("Priority clash");
+                                }
+                            }
+                            InfixType::XFY => {
+                                if op_prefix.precedence > last_op_infix.precedence {
+                                    panic!("Priority clash");
+                                }
+                            }
+                        }
+                    }
+                    else if let Some(last_op_prefix) = last_op.prefix {
+                        match last_op_prefix.op_type {
+                            PrefixType::FX => if last_op_prefix.precedence == op_prefix.precedence {
+                                panic!("Priority clash");
+                            } else {
+                                self.apply_top();
+                                return true;
+                            },
+                            PrefixType::FY => if last_op_prefix.precedence <= op_prefix.precedence {
+                                self.apply_top();
+                                return true;
+                            }
+                        }
+                    }
+                    else {
+                        panic!("Operator Error");
+                    }
+                }
+            } 
+            if let Some(op_infix) = operator.infix {
+                if let Some(last_op_infix) = last_op.infix {
+                    // TODO: Check whether (InfixType::XFY, InfixType::YFX) | (InfixType::YFX, InfixType::YFX) case is correct
+                    match (last_op_infix.op_type, op_infix.op_type) {
+                        (InfixType::XFX, InfixType::XFX) 
+                        | (InfixType::XFX, InfixType::XFY) 
+                        | (InfixType::YFX, InfixType::XFX) 
+                        | (InfixType::YFX, InfixType::XFY)
+                        | (InfixType::XFY, InfixType::YFX) => {
+                            if last_op_infix.precedence == op_infix.precedence {
+                                panic!("Operator clash {} vs {}", last_op.atom, operator.atom);
+                            } else if last_op_infix.precedence < op_infix.precedence {
+                                self.apply_top();
+                                return true;
+                            }
+                        }                        
+                        (InfixType::XFX, InfixType::YFX) | (InfixType::YFX, InfixType::YFX) => {
+                            if last_op_infix.precedence <= op_infix.precedence {
+                                self.apply_top();
+                                return true;
+                            }
+                        }
+                        (InfixType::XFY, InfixType::XFX) | (InfixType::XFY, InfixType::XFY) => {
+                            if last_op_infix.precedence < op_infix.precedence {
+                                self.apply_top();
+                                return true;
+                            }
+                        }
+                    }
+                }
+                else if let Some(last_op_prefix) = last_op.prefix {
+                    assert!(!self.is_last_token_operator());
+                    match (last_op_prefix.op_type, op_infix.associativity()) {
+                        (PrefixType::FX, Associativity::Left) | (PrefixType::FY, Associativity::Left) => 
+                            if last_op_prefix.precedence <= op_infix.precedence {
+                                self.apply_top();
+                                return true;
+                            },
+                        (PrefixType::FX, Associativity::Right) | (PrefixType::FX, Associativity::None) => 
+                            if last_op_prefix.precedence < op_infix.precedence {
+                                self.apply_top();
+                                return true;
+                            } else if last_op_prefix.precedence == op_infix.precedence {
+                                panic!("operator clash")
+                            },
+                        (PrefixType::FY, Associativity::Right) | (PrefixType::FY, Associativity::None) =>           
+                            if last_op_prefix.precedence < op_infix.precedence {
+                                self.apply_top();
+                                return true;
+                            },
+                        
+                    }
+                }
+                else if let Some(last_op_postfix) = last_op.postfix {
+                    assert!(self.is_last_token_operator());
+                    match op_infix.associativity() {
+                        Associativity::Left => if last_op_postfix.precedence <= op_infix.precedence {
+                            self.apply_top();
+                            return true;
+                        }
+                        Associativity::Right | Associativity::None => if last_op_postfix.precedence == op_infix.precedence {
+                            panic!("Operator clash {} vs {}", last_op.atom, operator.atom);
+                        } else if last_op_postfix.precedence < op_infix.precedence {
+                            self.apply_top();
+                            return true;
+                        }
+                    }                    
+                }
+            }
+            if let Some(op_postfix) = operator.postfix {
+                if !self.is_last_token_operator() {
+                    if let Some(last_op_infix) = last_op.infix {
+                        match last_op_infix.op_type {
+                            InfixType::XFX | InfixType::YFX => {
+                                if op_postfix.precedence == last_op_infix.precedence {
+                                    panic!("Priority clash");
+                                } else if op_postfix.precedence > last_op_infix.precedence {
+                                    self.apply_top();
+                                    return true;
+                                }
+                            }
+                            InfixType::XFY => {
+                                if op_postfix.precedence > last_op_infix.precedence {
+                                    self.apply_top();
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                else if let Some(last_op_postfix) = last_op.postfix {
+                    match last_op_postfix.op_type {
+                        PostfixType::XF => if last_op_postfix.precedence == op_postfix.precedence {
+                            panic!("Priority clash");
+                        } else {
+                            self.apply_top();
+                            return true;
+                        },
+                        PostfixType::YF => if last_op_postfix.precedence <= op_postfix.precedence {
+                            self.apply_top();
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
+    pub fn parse_with_defaults(&mut self, pair: Pair<Rule>) -> Option<Term> {
+        self.parse(pair, &PrologParser::new())
+    }
+
+    pub fn parse(&mut self, pair: Pair<Rule>, prolog_parser: &PrologParser) -> Option<Term> {
         let pairs = pair.into_inner();
-
-        let mut args_stack: Vec<Term> = Vec::new();
-        let mut args_mode = false;
 
         for (idx, pair) in pairs.enumerate() {
             self.pos = idx + 1;
-            if pair.as_str() == "(" {
-                self.push_operator(ShuntyardOperator::LeftPar);
-                //println!("LPAR found");
-            }
-            else if pair.as_str() == "," {
-                self.push_operator(ShuntyardOperator::Comma);
-                //println!("COMMA found");
-            } 
-            else if pair.as_str() == ")" {
-                //println!("RPAR found");
-                let mut left_par_found = false;
-                while let Some((top_op, _)) = self.operator_stack.pop() {
-                    match top_op {
-                        ShuntyardOperator::LeftPar => {
-                            left_par_found = true;
-                            break
+            let inner = prolog_parser.from(pair)?;
+            if let CFGNode::Term(term) = inner {
+                match term {
+                    Term::Atom(atom) => {
+                        if let Some(new_op) = prolog_parser.operators.get(atom.as_str()) {
+                            while self.handle_operator(new_op.clone()) {}
+                            self.push_operator(ShuntingyardOperator::Operator(new_op.clone()));
                         }
-                        ShuntyardOperator::Comma => {
-                            if !args_mode {
-                                let arg = self.pop_argument();
-                                args_stack.push(arg);
-                                args_mode = true;
-                            }
-                            args_stack.push(self.pop_argument());
-                        }
-                        ShuntyardOperator::Operator(next_op) => {
-                            let mut params: Vec<Term> = Vec::new();
-                            for _ in 0..next_op.arity() {
-                                let operand = self.pop_operand().unwrap();
-                                params.insert(0, operand);
-                            }
-                            self.push_operand(Term::Structure(Structure {
-                                functor: next_op.atom,
-                                params: params
-                            }));
+                        else {
+                            self.push_operand(Term::Atom(atom));
                         }
                     }
-                }
-                assert!(left_par_found);
-                if args_mode {
-                    if let Term::Atom(functor) = self.pop_argument() {
-                        self.push_operand(Term::Structure(Structure {
-                            functor: functor,
-                            params: std::mem::replace(&mut args_stack, Vec::new()).into_iter().rev().collect()
-                        }));
-                    } else {
-                        panic!("Expected functor");
-                    }
-                    println!("Args: {:?}", args_stack);
-                    args_mode = false;
-                } else {
-                    println!("Operators {:?} Operands {:?}", self.operator_stack, self.operand_stack);
-                    let operand = self.pop_operand().unwrap();
-                    match self.pop_unary_functor() {
-                        Some(Term::Atom(functor)) => {
-                            self.push_operand(Term::Structure(Structure {
-                                functor: functor,
-                                params: vec![operand]
-                            }));
+                    Term::Structure(structure) => {
+                        // TODO: Clean up followin if-else statements
+                        if structure.params.len() != 1 {
+                            self.push_operand(Term::Structure(structure));
+                        } else if let Some(new_op) = prolog_parser.operators.get(structure.functor.as_str()) {
+                            if new_op.prefix.is_none() && new_op.postfix.is_none() {
+                                while self.handle_operator(new_op.clone()) {}
+                                self.push_operator(ShuntingyardOperator::Operator(new_op.clone()));
+                                self.push_operand(structure.params[0].clone());
+                            } else {
+                                self.push_operand(Term::Structure(structure));
+                            }
                         }
-                        _ => self.push_operand(operand)
+                        else {
+                            self.push_operand(Term::Structure(structure));
+                        }
+                    }
+                    other => {
+                        self.push_operand(other);
                     }
                 }
             } else {
-                println!("{:?}", pair);
-                let inner = CFGNode::from(pair)?;
-                if let CFGNode::Term(term) = inner {
-                    match term {
-                        Term::Atom(atom) => {
-                            println!("Atom: {}", atom);
-                            if let Some(new_op) = DEFAULT_PRECEDENCES.get(atom.as_str()) {
-                                while let Some((ShuntyardOperator::Operator(top_op), _)) = self.operator_stack.last() {
-                                    if new_op.precedence > top_op.precedence 
-                                        || (new_op.op_type == OperatorType::YFX && new_op.precedence == top_op.precedence) {
-                                        let operator = match self.operator_stack.pop()? {
-                                            (ShuntyardOperator::Operator(op), _) => op,
-                                            _ => return None
-                                        };
-                                        let mut params: Vec<Term> = Vec::new();
-                                        for _ in 0..operator.arity() {
-                                            let operand = self.pop_operand().unwrap();
-                                            params.insert(0, operand);
-                                        }
-                                        self.push_operand(Term::Structure(Structure {
-                                            functor: operator.atom,
-                                            params: params
-                                        }));
-                                    } else {
-                                        break;
-                                    }
-                                }
-                                self.push_operator(ShuntyardOperator::Operator(new_op.clone()));
-                            }
-                            else {
-                                self.push_operand(Term::Atom(atom));
-                            }
-                        }
-                        other => {
-                            self.push_operand(other);
-                        }
-                    }
-                } else {
-                    return None
-                }
+                return None
             }
         }
 
-        while let Some((ShuntyardOperator::Operator(operator), _)) = self.operator_stack.pop() {
-            println!("Top atom: {:?}", operator);
-            let mut params: Vec<Term> = Vec::new();
-            for _ in 0..operator.arity() {
-                let operand = self.pop_operand().unwrap();
-                params.insert(0, operand);
-            }
-            self.push_operand(Term::Structure(Structure {
-                functor: operator.atom,
-                params: params
-            }));
+        while !self.operator_stack.is_empty() {
+            self.apply_top();
         }
-
-        println!("Operand Stack: {:?}", self.operand_stack);
-        println!("Operator Stack: {:?}", self.operator_stack);
 
         assert!(self.operand_stack.len() == 1);
         assert!(self.operator_stack.len() == 0);

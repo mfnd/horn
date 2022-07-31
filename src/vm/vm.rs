@@ -7,7 +7,7 @@ use std::collections::hash_map::Entry;
 use crate::builtins::BUILTINS;
 use crate::debugln;
 use crate::ir_gen::{QueryDef, IRGen, Module};
-use crate::parser::CFGNode;
+use crate::parser::{CFGNode, PrologParser};
 use crate::vm::{List, Instruction, Struct};
 
 use super::{ValueCell, CodeBlock, Rule, NativePredicate, OPERATOR_ATOMS, Operator};
@@ -244,7 +244,7 @@ impl PrologVM {
     }
 
     pub fn set_query_from_str(&mut self, query_str: &str) -> Result<(), QueryError> {
-        if let Some(CFGNode::Query(terms)) = CFGNode::parse_query(query_str) {
+        if let Some(CFGNode::Query(terms)) = PrologParser::new().parse_query(query_str) {
             let mut ir_gen = IRGen::new();
             let query_rule = ir_gen.generate_query(terms);
 

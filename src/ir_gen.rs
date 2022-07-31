@@ -38,25 +38,19 @@ impl Module {
 
 }
 
-pub struct IRGen<'a> {
+pub struct IRGen {
     curr_module: Module,
     code: Vec<Instruction>,
     variables: Vec<String>,
-    precedences: &'a PrecedenceMap<'a>
 }
 
-impl<'a> IRGen<'a> {
+impl IRGen {
 
     pub fn new() -> Self {
-        Self::with_precedences(&DEFAULT_PRECEDENCES)
-    }
-
-    pub fn with_precedences(precedences: &'a PrecedenceMap) -> Self {
         IRGen {
             curr_module: Module::new(),
             code: Vec::new(),
             variables: Vec::new(),
-            precedences
         }
     }
 
