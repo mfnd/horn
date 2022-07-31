@@ -17,6 +17,31 @@ use rustyline::{Editor, config::{self, Configurer}};
 
 const VERSION : &str = env!("CARGO_PKG_VERSION");
 
+
+fn execute(runtime: &mut vm::PrologVM, query: &str) {
+    if let Err(err) = runtime.set_query_from_str(&query) {
+        println!("Query Error: {:?}", err);
+        return;
+    }
+
+    let mut satisfied = false;
+    while let Some(results) = runtime.next() {
+        match results {
+            Ok(values) => {
+                for (idx, result) in values.iter().enumerate() {
+                    println!("{:}: {:?}", idx, result);
+                }
+                satisfied = true;
+            }
+            Err(err) => {
+                println!("Error: {:?}", err);
+                return;
+            }
+        }
+    }
+    println!("{}.", satisfied);
+}
+
 fn main() {
     println!("Horn Prolog v{}\n", VERSION);
 
@@ -26,6 +51,7 @@ fn main() {
     editor_conf.set_auto_add_history(true);
     
     let mut prompt = Editor::<()>::with_config(editor_conf.build());
+    prompt.load_history(".history");
     let mut command: Option<String> = None;
     loop {
         let line = if command.is_none() {
@@ -43,12 +69,15 @@ fn main() {
                 }
                 if let Some(buf) = &command {
                     if buf.trim_end().ends_with(".") {
-                        runtime.execute_query_str(&buf);
+                        execute(&mut runtime, &buf);
                         command = None;
                     }
                 }
             }
-            Err(_) => break
+            Err(_) => {
+                prompt.save_history(".history");
+                break;
+            }
         }
     }
 }
