@@ -1,1 +1,6 @@
 /target
+.idea
+.vscode
+/bench
+.history
+bak

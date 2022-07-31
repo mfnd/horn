@@ -9,26 +9,29 @@ char = {
     | "\\" ~ ("u" ~ ASCII_HEX_DIGIT{4})
 }
 
-operators = {
-    "\\+" | "+" | "-" | "**" | "*" | "/" | "^" | "<" | ">" | "=" | "=:="
+operator_symbol = @{
+    ("+" | "-" | "*" | "/" | "^" | "<" | ">" | "=")+ | "\\+" | "=:="
 }
-atom = @{ (ASCII_ALPHA_LOWER ~ ( "_" | ASCII_ALPHANUMERIC)*) | operators }
-variable = @{ ASCII_ALPHA_UPPER ~ ASCII_ALPHANUMERIC*}
 
-structure = { atom ~ "(" ~ terms ~ ")" }
+atom = @{ (ASCII_ALPHA_LOWER ~ ( "_" | ASCII_ALPHANUMERIC)*) | operator_symbol }
+variable = @{ ASCII_ALPHA_UPPER ~ ASCII_ALPHANUMERIC*}
 
 
 list_tail = { "|" ~ variable }
 list = { "[" ~ terms?  ~  list_tail? ~ "]"  }
 
-infix_expression = { basic_term ~ (atom ~ basic_term)+ }
+paren_expr = { "(" ~ expression  ~ ")" }
+expression = { ( paren_expr | basic_term )+ }
+
+struct_head = ${ atom ~ "(" }
+structure = { struct_head ~ expression ~ ( "," ~ expression)* ~ ")" }
 
 basic_term = {
     structure | list | number | atom | variable | string
 }
 
 term = _{
-    infix_expression | basic_term
+    expression
 }
 
 terms = _{
@@ -40,3 +43,5 @@ rule = { term ~ ":-" ~ terms ~ "." }
 query = { terms ~ "." }
 
 file = { SOI ~ (fact | rule)* ~ EOI }
+
+term_only = _{ SOI ~ term ~ EOI}
