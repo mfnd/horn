@@ -1,9 +1,9 @@
-use crate::{vm::{PrologVM, Value, QueryError}, parser::CFGNode, ir_gen::IRGen};
+use crate::{vm::{PrologVM, Value, QueryError}, parser::{CFGNode, PrologParser}, ir_gen::IRGen};
 
 
 
 pub fn consult_str(vm: &mut PrologVM, source: &str) {
-    let file_node = CFGNode::parse_file(&source).expect("Couldn't parse");
+    let file_node = PrologParser::new().parse_file(&source).expect("Couldn't parse");
     let mut ir_gen = IRGen::new();
     let module = ir_gen.generate(file_node);
     vm.load_module(module);
