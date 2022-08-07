@@ -56,6 +56,21 @@ impl PartialEq for Value {
     }
 }
 
+impl PartialOrd for Value {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        match (self, other) {
+            (Self::Int(left), Self::Int(right)) => left.partial_cmp(right),
+            (Self::Str(left), Self::Str(right)) => left.partial_cmp(right),
+            (Self::Ref(left), Self::Ref(right)) => {
+                left.get_value_deref().partial_cmp(&right.get_value_deref())
+            },
+            (Self::Ref(left), right) => left.get_value_deref().partial_cmp(right),
+            (left, Self::Ref(right)) => left.partial_cmp(&right.get_value_deref()),
+            _ => None
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum List {
     Nil,

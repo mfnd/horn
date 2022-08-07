@@ -388,6 +388,12 @@ lazy_static! {
             ("\\+", Operator::new_prefix("\\+", 900, PrefixType::FY)),
             ("is", Operator::new_infix("is", 700, InfixType::XFX)),
             ("==", Operator::new_infix("==", 700, InfixType::XFX)),
+            ("=:=", Operator::new_infix("=:=", 700, InfixType::XFX)),
+            ("=/=", Operator::new_infix("=/=", 700, InfixType::XFX)),
+            ("<", Operator::new_infix("<", 700, InfixType::XFX)),
+            ("=<", Operator::new_infix("=<", 700, InfixType::XFX)),
+            (">", Operator::new_infix(">", 700, InfixType::XFX)),
+            (">=", Operator::new_infix(">=", 700, InfixType::XFX)),
             ("+", Operator {
                 atom: String::from("+"),
                 infix: Some(OperatorInfo { precedence: 500, op_type: InfixType::YFX }),

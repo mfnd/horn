@@ -4,13 +4,13 @@ use std::rc::Rc;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 
-use crate::builtins::BUILTINS;
+use crate::prelude::BUILTINS;
 use crate::debugln;
 use crate::ir_gen::{QueryDef, IRGen, Module};
 use crate::parser::{CFGNode, PrologParser};
 use crate::vm::{List, Instruction, Struct};
 
-use super::{ValueCell, CodeBlock, Rule, NativePredicate, OPERATOR_ATOMS, Operator};
+use super::{ValueCell, CodeBlock, Rule, NativePredicate, OPERATOR_ATOMS, Operator, ArithComparisonOp};
 use super::value::Value;
 
 struct CallFrame {
@@ -426,6 +426,16 @@ impl PrologVM {
                         backtrack = true;
                     }
                 }
+                Instruction::CompareArithRegisters { op, register1, register2 } => {
+                    let res = self.compare_arithmetic(
+                        *op,
+                        &self.read_register(*register1),
+                        &self.read_register(*register2)
+                    );
+                    if !res {
+                        backtrack = true;
+                    }
+                }
                 Instruction::Call(rule) => {
                     self.prev_pc = pc;
                     pc = 0;
@@ -633,7 +643,9 @@ impl PrologVM {
                             match s.functor.into() {
                                 Operator::Add => Value::Int(v1 + v2),
                                 Operator::Sub => Value::Int(v1 - v2),
-                                _ => panic!("Invalid operands")
+                                Operator::Mul => Value::Int(v1 * v2),
+                                // TODO: Handle division by zero
+                                Operator::Div => Value::Int(v1 / v2),
                             }
                         }
                         (a1, a2) => {
@@ -645,8 +657,21 @@ impl PrologVM {
                     panic!()
                 }
             }
-            Value::Ref(value_cell) => value_cell.get_value_deref(),
+            Value::Ref(value_cell) => self.eval_arithmetic(&value_cell.get_value_deref()),
             _ => todo!()
+        }
+    }
+
+    pub fn compare_arithmetic(&self, op: ArithComparisonOp, left: &Value, right: &Value) -> bool {
+        let left_val = self.eval_arithmetic(left);
+        let right_val = self.eval_arithmetic(right);
+        match op {
+            ArithComparisonOp::Eq  => left_val == right_val,
+            ArithComparisonOp::Neq => left_val != right_val,
+            ArithComparisonOp::Lt  => left_val <  right_val,
+            ArithComparisonOp::Lte => left_val <= right_val,
+            ArithComparisonOp::Gt  => left_val >  right_val,
+            ArithComparisonOp::Gte => left_val >= right_val,
         }
     }
 

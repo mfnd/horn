@@ -1,8 +1,19 @@
 use std::{rc::Rc, fmt, ops::Index, cell::RefCell};
 
-use crate::builtins::BuiltIn;
+use crate::prelude::BuiltIn;
 
 use super::Value;
+
+
+#[derive(Debug, Clone, Copy)]
+pub enum ArithComparisonOp {
+    Eq,
+    Neq,
+    Lt,
+    Lte,
+    Gt,
+    Gte,
+}
 
 #[derive(Debug)]
 pub enum Instruction {
@@ -17,6 +28,7 @@ pub enum Instruction {
     UnifyVariables { variable1: u32, variable2: u32 },
     UnifyVariableConstant { variable: u32, constant: Value },
     UnifyVariableRegister { variable: u32, register: u32},
+    CompareArithRegisters { op: ArithComparisonOp, register1: u32, register2: u32 },
     Call(Rc<Rule>),
     NativeCall(Rc<NativePredicate>),
     NamedCall(usize, u32),

@@ -10,7 +10,7 @@ char = {
 }
 
 operator_symbol = @{
-    ("+" | "-" | "*" | "/" | "^" | "<" | ">" | "=")+ | "\\+" | "=:="
+    "\\+" | "=:=" | ("+" | "-" | "*" | "/" | "^" | "<" | ">" | "=")+
 }
 
 atom = @{ (ASCII_ALPHA_LOWER ~ ( "_" | ASCII_ALPHANUMERIC)*) | operator_symbol }
