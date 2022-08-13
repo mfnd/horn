@@ -357,6 +357,9 @@ impl PrologVM {
 
                     debugln!("Curr frame {:?} Freeze idx {:?} Pc {:?}", self.curr_frame, self.freeze_idx, pc); 
                 }
+                &Instruction::Cut => {
+                    self.choice_stack.clear();
+                }
                 Instruction::Pop(register) => self.registers[*register as usize] = self.value_stack.pop().unwrap(),
                 Instruction::LoadRegister { register, variable } => {
                     let value = self.read_register(*register);

@@ -196,6 +196,13 @@ impl IRGen {
             match body_term {
                 Term::Structure(s) => {
                     self.create_body(s)
+                },
+                Term::Atom(atom) => {
+                    if atom == "!" {
+                        self.code.push(Instruction::Cut);
+                    } else {
+                        todo!();
+                    }
                 }
                 _ => todo!()
             }

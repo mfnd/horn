@@ -54,3 +54,66 @@ run_collect_assert! {
         ]
     ),
 }
+
+run_collect_assert! {
+    cut_test_1: (
+        r#"
+        alt(1, 3).
+        alt(1, 5).
+        alt(2, 4).
+        alt(5, 9).
+        alt(1, 7).
+
+        select_one(X, Y) :- alt(X, Y), !.
+
+        "#,
+        "select_one(1, Res).",
+        &[
+            &[Value::Int(3)],
+        ]
+    ),
+
+    cut_test_2: (
+        r#"
+        a(1).
+        a(2).
+        a(3).
+
+        b(1, 10).
+        b(1, 11).
+        b(2, 3).
+        b(2, 4).
+        b(3, 5).
+
+        compound(X, Y) :- a(X), !, b(X, Y).
+
+        "#,
+        "compound(X, Y).",
+        &[
+            &[Value::Int(1), Value::Int(10)], 
+            &[Value::Int(1), Value::Int(11)],
+        ]
+    ),
+
+    cut_test_max_1: (
+        r#"
+        max1(X, Y, X) :- X > Y, !.
+        max1(X, Y, Y).
+        "#,
+        "max1(5, 4, Res).",
+        &[
+            &[Value::Int(5)], 
+        ]
+    ),
+
+    cut_test_max_2: (
+        r#"
+        max1(X, Y, X) :- X > Y, !.
+        max1(X, Y, Y).
+        "#,
+        "max1(4, 5, Res).",
+        &[
+            &[Value::Int(5)], 
+        ]
+    ),
+}

@@ -36,7 +36,8 @@ pub enum Instruction {
     PushVariable(u32),
     CreateStructure(usize, u32),
     CreateList { head_count: u32, with_tail: bool},
-    Pop(u32)
+    Pop(u32),
+    Cut
 }
 
 

@@ -13,7 +13,7 @@ operator_symbol = @{
     "\\+" | "=:=" | ("+" | "-" | "*" | "/" | "^" | "<" | ">" | "=")+
 }
 
-atom = @{ (ASCII_ALPHA_LOWER ~ ( "_" | ASCII_ALPHANUMERIC)*) | operator_symbol }
+atom = @{ (ASCII_ALPHA_LOWER ~ ( "_" | ASCII_ALPHANUMERIC)*) | "!" | operator_symbol }
 variable = @{ ASCII_ALPHA_UPPER ~ ASCII_ALPHANUMERIC*}
 
 
