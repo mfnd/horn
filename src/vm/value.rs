@@ -34,6 +34,19 @@ impl Value {
             _ => self.clone()
         }
     }
+
+    pub fn type_str(&self) -> &'static str {
+        match self {
+            Value::Nil => "nil",
+            Value::All => "all",
+            Value::Atom(_) => "atom",
+            Value::Int(_) => "integer",
+            Value::Str(_) => "string",
+            Value::Struct(_) => "struct",
+            Value::Ref(value_cell) => value_cell.get_value_deref().type_str(),
+            Value::List(_) => "list",
+        }
+    }
 }
 
 impl PartialEq for Value {

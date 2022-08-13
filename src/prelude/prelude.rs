@@ -3,31 +3,31 @@ use std::{fs, fmt};
 
 use crate::debugln;
 use crate::ir_gen::IRGen;
-use crate::vm::{Value, PrologVM};
+use crate::vm::{Value, PrologVM, RuntimeResult};
 use crate::parser::{PestPrologParser, PrologRule, CFGNode, PrologParser};
 
-pub type BuiltIn = fn(&mut PrologVM) -> bool;
+pub type BuiltIn = fn(&mut PrologVM) -> RuntimeResult<bool>;
 
-pub fn consult(vm: &mut PrologVM) -> bool {
+pub fn consult(vm: &mut PrologVM) -> RuntimeResult<bool> {
     if let Value::Str(file_path) = vm.read_register(0) {
         let file = fs::read_to_string(&*file_path).unwrap();
         let file_node = PrologParser::new().parse_file(&file).expect("Couldn't parse");
         let mut ir_gen = IRGen::new();
         let module = ir_gen.generate(file_node);
         vm.load_module(module);
-        return true;
+        return Ok(true);
     }
-    false
+    Ok(false)
 }
 
-pub fn is(vm: &mut PrologVM) -> bool {
+pub fn is(vm: &mut PrologVM) -> RuntimeResult<bool> {
     let value = vm.read_register(0);
     let expr = vm.read_register(1);
-    let result = vm.eval_arithmetic(&expr);
+    let result = vm.eval_arithmetic(&expr)?;
     
     debugln!("Evaluating {:?} {:?}", value, expr);
 
-    vm.unify(value, result)
+    Ok(vm.unify(value, result))
 }
 
 lazy_static! {

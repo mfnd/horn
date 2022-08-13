@@ -2,7 +2,7 @@ use std::{rc::Rc, fmt, ops::Index, cell::RefCell};
 
 use crate::prelude::BuiltIn;
 
-use super::Value;
+use super::{Value, RuntimeError};
 
 
 #[derive(Debug, Clone, Copy)]
@@ -41,31 +41,20 @@ pub enum Instruction {
 }
 
 
-#[derive(Clone, Copy)]
-pub enum Operator {
-    Add = 0,
-    Sub = 1,
-    Mul = 2,
-    Div = 3
+pub struct PreludeAtoms {}
+
+impl PreludeAtoms {
+    pub const Add: usize = 0;
+    pub const Sub: usize = 1;
+    pub const Mul: usize = 2;
+    pub const Div: usize = 3;
 }
 
-impl From<usize> for Operator {
-    fn from(op: usize) -> Self {
-        match op {
-            0 => Operator::Add,
-            1 => Operator::Sub,
-            2 => Operator::Mul,
-            3 => Operator::Div,
-            _ => panic!("Invalid operator")
-        }
-    }
-}
-
-pub const OPERATOR_ATOMS : &[(Operator, &str)] = &[
-    (Operator::Add, "+"),
-    (Operator::Sub, "-"),
-    (Operator::Mul, "*"),
-    (Operator::Div, "/")
+pub const PRELUDE_ATOMS : &[(usize, &str)] = &[
+    (PreludeAtoms::Add, "+"),
+    (PreludeAtoms::Sub, "-"),
+    (PreludeAtoms::Mul, "*"),
+    (PreludeAtoms::Div, "/")
 ];
 
 

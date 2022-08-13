@@ -10,7 +10,7 @@ mod tests;
 mod vm;
 mod parser;
 mod ir_gen;
-mod builtins;
+mod prelude;
 mod utils;
 
 use rustyline::{Editor, config::{self, Configurer}};
@@ -20,7 +20,7 @@ const VERSION : &str = env!("CARGO_PKG_VERSION");
 
 fn execute(runtime: &mut vm::PrologVM, query: &str) {
     if let Err(err) = runtime.set_query_from_str(&query) {
-        println!("Query Error: {:?}", err);
+        println!("{}", err);
         return;
     }
 
@@ -34,7 +34,7 @@ fn execute(runtime: &mut vm::PrologVM, query: &str) {
                 satisfied = true;
             }
             Err(err) => {
-                println!("Error: {:?}", err);
+                println!("{}", err);
                 return;
             }
         }

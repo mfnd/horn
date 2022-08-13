@@ -1,4 +1,4 @@
-use crate::{vm::{PrologVM, Value, QueryError}, parser::{CFGNode, PrologParser}, ir_gen::IRGen};
+use crate::{vm::{PrologVM, Value, RuntimeError}, parser::{CFGNode, PrologParser}, ir_gen::IRGen};
 
 
 
@@ -10,13 +10,16 @@ pub fn consult_str(vm: &mut PrologVM, source: &str) {
 }
 
 pub fn assert_results(vm: &mut PrologVM, query: &str, expected: &[&[Value]]) {
-    vm.set_query_from_str(query).expect("Could not set query");
-    let results: Result<Vec<Vec<Value>>, QueryError> = vm.collect();
+    match vm.set_query_from_str(query) {
+        Ok(_) => (),
+        Err(err) => panic!("Could not set query: {}", err),
+    }
+    let results: Result<Vec<Vec<Value>>, Box<RuntimeError>> = vm.collect();
     match results {
         Ok(values) => {
             assert_eq!(values, expected);
         }
-        Err(err) => panic!("Error while collecting results: {:?}", err)
+        Err(err) => panic!("Error while collecting results: {}", err)
     }
 }
 

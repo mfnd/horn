@@ -10,7 +10,8 @@ use crate::ir_gen::{QueryDef, IRGen, Module};
 use crate::parser::{CFGNode, PrologParser};
 use crate::vm::{List, Instruction, Struct};
 
-use super::{ValueCell, CodeBlock, Rule, NativePredicate, OPERATOR_ATOMS, Operator, ArithComparisonOp};
+use super::error::{RuntimeError, RuntimeErrorType};
+use super::{ValueCell, CodeBlock, Rule, NativePredicate, PRELUDE_ATOMS, PreludeAtoms, ArithComparisonOp};
 use super::value::Value;
 
 struct CallFrame {
@@ -53,19 +54,15 @@ impl ChoiceFrame {
     }
 }
 
-#[derive(Debug)]
-pub enum QueryError {
-    NoResult,
-    QueryNotSet,
-    ParseError,
-}
 
-pub type QueryResult = Result<Vec<Value>, QueryError>;
+pub type RuntimeResult<T> = Result<T, Box<RuntimeError>>;
+pub type QueryResult = RuntimeResult<Vec<Value>>;
 
 pub struct PrologVM {
     rules: HashMap<(usize, u32), Rc<Rule>>,
     native_predicates: HashMap<(usize, u32), Rc<NativePredicate>>,
     atoms: HashMap<String, usize>,
+    atoms_by_id: Vec<String>,
     registers: Vec<Value>,
     value_stack: Vec<Value>,
     call_stack: Vec<CallFrame>,
@@ -82,13 +79,17 @@ impl PrologVM {
 
     pub fn new() -> Self {
         let mut atoms = HashMap::new();
-        for (op, ident) in OPERATOR_ATOMS {
+        let mut atoms_by_id = Vec::new();
+        for (op, ident) in PRELUDE_ATOMS {
+            assert!(*op as usize == atoms_by_id.len());
+            atoms_by_id.push(String::from(*ident));
             atoms.insert(String::from(*ident), *op as usize);
         }
 
         let mut native_predicates = HashMap::new();
         BUILTINS.iter().for_each(|(name, builtin)| {
-            let idx = atoms.len();
+            let idx = atoms_by_id.len();
+            atoms_by_id.push(String::from(name.0));
             atoms.insert(String::from(name.0), idx);
             native_predicates.insert((idx, name.1), Rc::from(
                 NativePredicate {
@@ -103,6 +104,7 @@ impl PrologVM {
             rules: HashMap::new(),
             native_predicates: native_predicates,
             atoms: atoms,
+            atoms_by_id: atoms_by_id,
             registers: vec![Value::Nil; 16],
             value_stack: Vec::new(),
             call_stack: Vec::new(),
@@ -243,7 +245,7 @@ impl PrologVM {
         true
     }
 
-    pub fn set_query_from_str(&mut self, query_str: &str) -> Result<(), QueryError> {
+    pub fn set_query_from_str(&mut self, query_str: &str) -> RuntimeResult<()> {
         if let Some(CFGNode::Query(terms)) = PrologParser::new().parse_query(query_str) {
             let mut ir_gen = IRGen::new();
             let query_rule = ir_gen.generate_query(terms);
@@ -251,7 +253,13 @@ impl PrologVM {
             self.set_query(query_rule);
             Ok(())
         } else {
-            Err(QueryError::ParseError)
+            Err(Box::from(
+                RuntimeError {
+                    error_type: RuntimeErrorType::ParseError,
+                    cause: None,
+                    message: String::from("Parse error"),
+                }
+            ))
         }
     }
 
@@ -268,14 +276,13 @@ impl PrologVM {
         self.code = Some(CodeBlock::from(query.code));
     }
 
-    pub fn execute(&mut self) -> Result<bool, QueryError> {
+    pub fn execute(&mut self) -> Result<bool, Box<RuntimeError>> {
         let mut pc : usize = self.pc;
         let mut code = match &self.code {
             Some(code) => code.clone(),
-            None => return Err(QueryError::QueryNotSet)
+            None => return Err(RuntimeError::query_not_set())
         };
         let mut backtrack = self.choice_stack.len() > 0;
-        let mut error: Option<QueryError> = None;
         let mut satisfied = true;
 
         'main: loop {
@@ -434,7 +441,7 @@ impl PrologVM {
                         *op,
                         &self.read_register(*register1),
                         &self.read_register(*register2)
-                    );
+                    )?;
                     if !res {
                         backtrack = true;
                     }
@@ -461,7 +468,7 @@ impl PrologVM {
                     code = alternates[0].clone();
                 }
                 Instruction::NativeCall(native_pred) => {
-                    (native_pred.function_ptr)(self);
+                    (native_pred.function_ptr)(self)?;
                 }
                 Instruction::NamedCall(functor, arity) => unreachable!(),
                 Instruction::PushConstant(val) => self.value_stack.push(val.clone()),
@@ -511,7 +518,7 @@ impl PrologVM {
                                     }
                                 }
                                 _ => {
-                                    println!("Value: {:#?}", stack_top);
+                                    debugln!("Value: {:#?}", stack_top);
                                     panic!("Expected list");
                                 }
                             }
@@ -537,10 +544,7 @@ impl PrologVM {
             self.code = None;
         }
 
-        match error {
-            Some(e) => Err(e),
-            None => Ok(satisfied)
-        }
+        Ok(satisfied)
     }
 
     /*pub fn save_pc(&mut self, pc: usize) {
@@ -612,8 +616,15 @@ impl PrologVM {
     }
 
     pub fn get_or_create_atom(&mut self, symbol: &str) -> usize {
-        let next_idx = self.atoms.len();
-        *self.atoms.entry(symbol.to_string()).or_insert(next_idx)
+        let next_idx = self.atoms_by_id.len();
+        match self.atoms.entry(symbol.to_string()) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => {
+                entry.insert(next_idx);
+                self.atoms_by_id.push(symbol.to_string());
+                next_idx
+            }
+        }
     }
 
     pub fn get_native(&mut self, functor: usize, arity: u32) -> Option<Rc<NativePredicate>> {
@@ -633,55 +644,82 @@ impl PrologVM {
         ).clone()
     }
 
-    pub fn eval_arithmetic(&self, expr: &Value) -> Value {
-        match expr {
+    pub fn eval_arithmetic(&self, expr: &Value) -> RuntimeResult<Value> {
+        let result = match expr {
             Value::Int(i) => Value::Int(*i),
             Value::Struct(s) => {
                 let arity = s.terms.len();
                 if arity == 2 {
-                    let arg1 = self.eval_arithmetic(&s.terms[0]);
-                    let arg2 = self.eval_arithmetic(&s.terms[1]);
+                    let arg1 = self.eval_arithmetic(&s.terms[0])?;
+                    let arg2 = self.eval_arithmetic(&s.terms[1])?;
                     match (arg1, arg2) {
                         (Value::Int(v1), Value::Int(v2)) => {
-                            match s.functor.into() {
-                                Operator::Add => Value::Int(v1 + v2),
-                                Operator::Sub => Value::Int(v1 - v2),
-                                Operator::Mul => Value::Int(v1 * v2),
+                            match s.functor {
+                                PreludeAtoms::Add => Value::Int(v1 + v2),
+                                PreludeAtoms::Sub => Value::Int(v1 - v2),
+                                PreludeAtoms::Mul => Value::Int(v1 * v2),
                                 // TODO: Handle division by zero
-                                Operator::Div => Value::Int(v1 / v2),
+                                PreludeAtoms::Div => Value::Int(v1 / v2),
+                                _ => return Err(Box::from(
+                                    RuntimeError {
+                                        error_type: RuntimeErrorType::ArithmeticError,
+                                        cause: None,
+                                        message: format!(
+                                            "Unsupported arithmetic operation {:?}", self.atoms_by_id[s.functor]
+                                        ),
+                                    }
+                                ))
                             }
                         }
                         (a1, a2) => {
-                            debugln!("Operands {:?} {:?}", a1, a2);
-                            panic!("Invalid operands")
+                            return Err(Box::from(
+                                RuntimeError {
+                                    error_type: RuntimeErrorType::ValueError,
+                                    cause: None,
+                                    message: format!(
+                                        "Invalid operands {:?} and {:?} for {:?}", a1.type_str(), a2.type_str(), self.atoms_by_id[s.functor]
+                                    ),
+                                }
+                            ))
                         }
                     }
                 } else {
-                    panic!()
+                    return Err(Box::from(
+                        RuntimeError {
+                            error_type: RuntimeErrorType::ArithmeticError,
+                            cause: None,
+                            message: format!(
+                                "Invalid arithmetic function {}/{}", self.atoms_by_id[s.functor], arity
+                            ),
+                        }
+                    ))
                 }
             }
-            Value::Ref(value_cell) => self.eval_arithmetic(&value_cell.get_value_deref()),
+            Value::List(list) => Value::List(list.clone()),
+            Value::Ref(value_cell) => self.eval_arithmetic(&value_cell.get_value_deref())?,
             _ => todo!()
-        }
+        };
+        Ok(result)
     }
 
-    pub fn compare_arithmetic(&self, op: ArithComparisonOp, left: &Value, right: &Value) -> bool {
-        let left_val = self.eval_arithmetic(left);
-        let right_val = self.eval_arithmetic(right);
-        match op {
+    pub fn compare_arithmetic(&self, op: ArithComparisonOp, left: &Value, right: &Value) -> RuntimeResult<bool> {
+        let left_val = self.eval_arithmetic(left)?;
+        let right_val = self.eval_arithmetic(right)?;
+        let result = match op {
             ArithComparisonOp::Eq  => left_val == right_val,
             ArithComparisonOp::Neq => left_val != right_val,
             ArithComparisonOp::Lt  => left_val <  right_val,
             ArithComparisonOp::Lte => left_val <= right_val,
             ArithComparisonOp::Gt  => left_val >  right_val,
             ArithComparisonOp::Gte => left_val >= right_val,
-        }
+        };
+        Ok(result)
     }
 
 }
 
 impl Iterator for PrologVM {
-    type Item = Result<Vec<Value>, QueryError>;
+    type Item = QueryResult;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.execute() {
@@ -696,10 +734,14 @@ impl Iterator for PrologVM {
         
                 Some(Ok(results))
             }
-            Ok(false) | Err(QueryError::QueryNotSet) => {
-                None
+            Ok(false) => None,
+            Err(err) => {
+                if let RuntimeErrorType::QueryNotSetError = err.error_type {
+                    None
+                } else {
+                    Some(Err(err))
+                }
             }
-            Err(err) => Some(Err(err))
         }
     }
 }
