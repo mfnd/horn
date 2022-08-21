@@ -6,12 +6,12 @@ use std::collections::hash_map::Entry;
 
 use crate::prelude::BUILTINS;
 use crate::debugln;
-use crate::ir_gen::{QueryDef, IRGen, Module};
+use crate::ir_gen::{QueryDef, IRGen, Module, PredicateDef};
 use crate::parser::{CFGNode, PrologParser};
 use crate::vm::{List, Instruction, Struct};
 
 use super::error::{RuntimeError, RuntimeErrorType};
-use super::{ValueCell, CodeBlock, Rule, NativePredicate, PRELUDE_ATOMS, PreludeAtoms, ArithComparisonOp};
+use super::{ValueCell, CodeBlock, Rule, NativePredicate, PRELUDE_ATOMS, PreludeAtoms, ArithComparisonOp, unify, Trail};
 use super::value::Value;
 
 struct CallFrame {
@@ -67,7 +67,7 @@ pub struct PrologVM {
     value_stack: Vec<Value>,
     call_stack: Vec<CallFrame>,
     choice_stack: Vec<ChoiceFrame>,
-    trail: Vec<ValueCell>,
+    trail: Trail,
     curr_frame: usize,
     freeze_idx: usize,
     code: Option<CodeBlock>,
@@ -109,7 +109,7 @@ impl PrologVM {
             value_stack: Vec::new(),
             call_stack: Vec::new(),
             choice_stack: Vec::new(),
-            trail: Vec::new(),
+            trail: Trail::new(),
             curr_frame: 0,
             freeze_idx: 0,
             code: None,
@@ -118,131 +118,9 @@ impl PrologVM {
         }
     }
 
+    #[inline(always)]
     pub fn unify(&mut self, val1: Value, val2: Value) -> bool {
-        match (val1, val2) {
-            (Value::All, _) | (_, Value::All) => true,
-            (Value::Atom(id1), Value::Atom(id2)) => id1 == id2,
-            (Value::Int(v1), Value::Int(v2)) => v1 == v2,
-            (Value::Str(v1), Value::Str(v2)) => v1 == v2,
-            (Value::Struct(struct1), Value::Struct(struct2)) => {
-                if Rc::ptr_eq(&struct1, &struct2) {
-                    true
-                } else if (*struct1).functor == (*struct2).functor && (*struct1).terms.len() == (*struct2).terms.len() {
-                    let mut res = true;
-                    for (term1, term2) in (*struct1).terms.iter().zip((*struct2).terms.iter()) {
-                        if !self.unify(term1.clone(), term2.clone()) {
-                            res = false;
-                            break;
-                        }
-                    }
-                    res
-                } else {
-                    false
-                }
-            }
-            (Value::List(list1), Value::List(list2)) => {
-                self.unify_lists(&list1, &list2)
-            }
-            (Value::Ref(loc1), Value::Ref(loc2)) => {
-                let v1 = loc1.get_value();
-                let v2 = loc2.get_value();
-                match (&v1, &v2) {
-                    (Value::Nil, _) => {
-                        self.trail.push(loc1.clone());
-                        loc1.put_ref(loc2.clone());
-                        true
-                    },
-                    (_, Value::Nil) => {
-                        self.trail.push(loc2.clone());
-                        loc2.put_ref(loc1.clone());
-                        true
-                    }
-                    _ => {
-                        self.unify(v1, v2)
-                    }
-                }
-            },
-            (Value::Ref(loc), other) | (other, Value::Ref(loc)) => {
-                let ref_val = loc.get_value();
-                match ref_val {
-                    Value::Nil => {
-                        self.trail.push(loc.clone());
-                        loc.put(other);
-                        true
-                    }
-                    _ => self.unify(ref_val, other)
-                }
-            }
-            _ => false
-        }
-    }
-
-    pub fn unify_lists(&mut self, first: &List, second: &List) -> bool {
-        let mut list1 = first;
-        let mut list2 = second;        
-        loop {
-            match (list1, list2) {
-                (List::Nil, List::Nil) => break,
-                (List::Nil, List::Cons(_)) => return false,
-                (List::Cons(_), List::Nil) => return false,
-                (List::Cons(node1), List::Cons(node2)) => {
-                    if Rc::ptr_eq(&node1, &node2) {
-                        return true;
-                    }
-                    if !self.unify(node1.head.clone(), node2.head.clone()) {
-                        return false;
-                    }
-                    list1 = &node1.tail;
-                    list2 = &node2.tail;
-                }
-                (List::Nil, List::Ref(loc)) | (List::Ref(loc), List::Nil)  => {
-                    self.trail.push(loc.clone());
-                    loc.put(Value::List(List::Nil));
-                    return true;
-                },
-                (cons_list @ List::Cons(node), List::Ref(loc)) | (List::Ref(loc), cons_list @ List::Cons(node)) => {
-                    let ref_val = loc.get_value_deref();
-                    match ref_val {
-                        Value::Nil => {
-                            self.trail.push(loc.clone());
-                            loc.put(Value::List(List::Cons(node.clone())));
-                        }
-                        Value::List(list) => return self.unify_lists(&list, cons_list),
-                        _ => return false
-                    }
-                }
-                (List::Ref(loc1), List::Ref(loc2)) => {
-                    let list1 = loc1.get_value_deref();
-                    let list2 = loc2.get_value_deref();
-                    match (&list1, &list2) {
-                        (Value::Nil, Value::Nil) => {
-                            self.trail.push(loc1.clone());
-                            loc1.put_ref(loc2.clone());
-                            return true;
-                        }
-                        (Value::Nil, Value::List(_)) => {
-                            self.trail.push(loc1.clone());
-                            loc1.put(list2.clone());
-                            return true;
-                        },
-                        (Value::List(_), Value::Nil) => {
-                            self.trail.push(loc2.clone());
-                            loc2.put(list1.clone());
-                            return true;
-                        },
-                        (Value::List(_), Value::List(_)) => {
-                            self.unify(list1, list2);
-                        }
-                        _ => {
-                            panic!("List reference values are expected to be lists - Unify {:?} and {:?}", list1, list2);
-                        }
-                    }
-                }
-                _ => unreachable!()
-            }
-        }
-
-        true
+        unify(val1, val2, &mut self.trail)
     }
 
     pub fn set_query_from_str(&mut self, query_str: &str) -> RuntimeResult<()> {
@@ -263,7 +141,6 @@ impl PrologVM {
         }
     }
 
-
     pub fn set_query(&mut self, mut query: QueryDef) {
         self.call_stack.clear();
         self.choice_stack.clear();
@@ -273,7 +150,7 @@ impl PrologVM {
         self.link_code(&mut query.code, &atom_mapping);
 
         self.pc = 0;
-        self.code = Some(CodeBlock::from(query.code));
+        self.code = Some(CodeBlock::from(query));
     }
 
     pub fn execute(&mut self) -> Result<bool, Box<RuntimeError>> {
@@ -293,12 +170,8 @@ impl PrologVM {
                         let alternates = choice_frame.rule.code.borrow();
                         if choice_frame.choice_idx + 1 < alternates.len() {
                             debugln!("Trying alternative: {}", choice_frame.choice_idx + 1);
-                            while self.trail.len() > choice_frame.trail_top {
-                                if let Some(change) = self.trail.pop() {
-                                    debugln!("Reverting {:?}", change);
-                                    change.put(Value::Nil);
-                                }
-                            }
+
+                            self.trail.rollback_until(choice_frame.trail_top);
     
                             while self.call_stack.len() > choice_frame.call_top {
                                 self.call_stack.pop();
@@ -452,7 +325,7 @@ impl PrologVM {
                     let rule = rule.clone();
                     let alternates = rule.code.borrow();
                     if alternates.len() == 0 {
-                        panic!("Predicate not defined");
+                        panic!("Predicate not defined: {}/{}", self.atoms_by_id[rule.functor], rule.arity);
                     } else if alternates.len() > 1 {
                         let arg_count = rule.arity as usize;
                         let mut args = Vec::with_capacity(arg_count);
@@ -573,25 +446,32 @@ impl PrologVM {
             let mapped_functor = atom_mapping[pred.functor];
             let rule_name = (mapped_functor, pred.arity as u32);
 
-            self.link_code(&mut pred.code, &atom_mapping);
+            //self.link_code(&mut pred.code, &atom_mapping);
+            self.link_predicate(&mut pred, &atom_mapping);
 
             match self.rules.entry(rule_name) {
                 Entry::Occupied(e) => {
                     let mut alternates = e.get().code.borrow_mut();
-                    alternates.push(CodeBlock::from(pred.code))
+                    alternates.push(CodeBlock::from(pred))
                 }
                 Entry::Vacant(e) => {
                     let rule = Rc::from(
                         Rule {
                             functor: pred.functor,
                             arity: pred.arity as u32,
-                            code: RefCell::from(vec![CodeBlock::from(pred.code)]),
+                            code: RefCell::from(vec![CodeBlock::from(pred)]),
                         }
                     );
                     e.insert(rule);
                 }
             }
         }
+    }
+
+    pub fn link_predicate(&mut self, pred: &mut PredicateDef, atom_mapping: &[usize]) {
+        self.link_code(&mut pred.code, atom_mapping);
+        pred.head = self.link_value(&mut pred.head, atom_mapping);
+        pred.body = pred.body.iter().map(|v| self.link_value(v, atom_mapping)).collect();
     }
 
     pub fn link_code(&mut self, code: &mut [Instruction], atom_mapping: &[usize]) {
@@ -612,6 +492,41 @@ impl PrologVM {
                 }
                 _ => ()
             }
+        }
+    }
+
+    pub fn link_value(&mut self, value: &Value, atom_mapping: &[usize]) -> Value {
+        match value {
+            Value::Atom(atom) => {
+                let mapped_atom = atom_mapping[*atom];
+                Value::Atom(mapped_atom)
+            }
+            Value::Struct(structure) => {
+                let mapped_functor = atom_mapping[structure.functor];
+                let params: Vec<Value> = structure.terms
+                    .iter()
+                    .map(|v| self.link_value(v, atom_mapping))
+                    .collect();
+                Value::Struct(Rc::from(Struct {
+                    functor: mapped_functor,
+                    terms: params
+                }))
+            }
+            Value::List(list) => Value::List(self.link_list_value(list, atom_mapping)),
+            _ => value.clone()
+        }
+    }
+
+    fn link_list_value(&mut self, list: &List, atom_mapping: &[usize]) -> List {
+        match list {
+            List::Nil => List::Nil,
+            List::Cons(node) => {
+                List::cons(
+                    self.link_value(&node.head, atom_mapping), 
+                    self.link_list_value(&node.tail, atom_mapping)
+                )
+            }
+            List::Ref(value_cell) => List::Ref(value_cell.clone())
         }
     }
 
@@ -642,6 +557,11 @@ impl PrologVM {
                 }
             )
         ).clone()
+    }
+
+    pub fn get_predicate(&mut self, functor: usize, arity: u32) -> Option<Rc<Rule>> {
+        let name = (functor, arity);
+        self.rules.get(&name).cloned()
     }
 
     pub fn eval_arithmetic(&self, expr: &Value) -> RuntimeResult<Value> {

@@ -1,6 +1,6 @@
 use std::{rc::Rc, fmt, ops::Index, cell::RefCell};
 
-use crate::prelude::BuiltIn;
+use crate::{prelude::BuiltIn, ir_gen::{PredicateDef, QueryDef}};
 
 use super::{Value, RuntimeError};
 
@@ -60,17 +60,29 @@ pub const PRELUDE_ATOMS : &[(usize, &str)] = &[
 
 #[derive(Clone)]
 pub struct CodeBlock {
+    pub head: Value,
+    pub body: Vec<Value>,
     pub code: Rc<Vec<Instruction>>
 }
 
-impl CodeBlock {
-
-    pub fn from(code: Vec<Instruction>) -> Self {
+impl From<PredicateDef> for CodeBlock {
+    fn from(pred: PredicateDef) -> Self {
         CodeBlock { 
-            code: Rc::from(code)
+            head: pred.head, 
+            body: pred.body, 
+            code: Rc::from(pred.code)
         }
     }
+}
 
+impl From<QueryDef> for CodeBlock {
+    fn from(query: QueryDef) -> Self {
+        CodeBlock { 
+            head: Value::Nil, 
+            body: Vec::new(), 
+            code: Rc::from(query.code)
+        }
+    }
 }
 
 impl Index<usize> for CodeBlock {

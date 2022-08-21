@@ -117,3 +117,59 @@ run_collect_assert! {
         ]
     ),
 }
+
+
+run_collect_assert! {
+    retract_test_1: (
+        r#"
+        fact(1, 3).
+        fact(2, 4).
+        fact(1, 5).
+        fact(2, 6).
+
+        retract_test(X, Y) :- retract(fact(1, I)), fact(X, Y).
+
+        "#,
+        "retract_test(X, Y).",
+        &[
+            &[Value::Int(2), Value::Int(4)],
+            &[Value::Int(1), Value::Int(5)],
+            &[Value::Int(2), Value::Int(6)]
+        ]
+    ),
+    retract_test_2: (
+        r#"
+        fact(1, 3).
+        fact(2, 4).
+        fact(1, 5).
+        fact(2, 6).
+
+        retract_test(X, Y) :- 
+            retract(fact(1, I)), 
+            retract(fact(1, I)),
+            fact(X, Y).
+
+        "#,
+        "retract_test(X, Y).",
+        &[
+            &[Value::Int(2), Value::Int(4)],
+            &[Value::Int(2), Value::Int(6)]
+        ]
+    ),
+    retractall_test_1: (
+        r#"
+        fact(1, 3).
+        fact(2, 4).
+        fact(1, 5).
+        fact(2, 6).
+
+        retract_test(X, Y) :- retractall(fact(1, I)), fact(X, Y).
+
+        "#,
+        "retract_test(X, Y).",
+        &[
+            &[Value::Int(2), Value::Int(4)],
+            &[Value::Int(2), Value::Int(6)]
+        ]
+    ),
+}

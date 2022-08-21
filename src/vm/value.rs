@@ -1,5 +1,7 @@
 use std::{rc::Rc, cell::RefCell, fmt};
 
+use crate::debugln;
+
 #[derive(Clone, Debug)]
 pub enum Value {
     Nil,
@@ -13,6 +15,18 @@ pub enum Value {
 }
 
 impl Value {
+
+    pub fn create_struct(functor: usize, terms: Vec<Value>) -> Self {
+        Value::Struct(
+            Rc::from(
+                Struct {
+                    functor,
+                    terms
+                }
+            )
+        )
+    }
+
     pub fn deep_copy(&self) -> Self {
         match self {
             Value::Struct(s) => {
@@ -206,4 +220,40 @@ impl fmt::Debug for ValueCell {
          .field("value", &self.get_value())
          .finish()
     }
+}
+
+
+pub struct Trail {
+    trail: Vec<ValueCell>
+}
+
+impl Trail {
+
+    pub fn new() -> Self {
+        Trail { 
+            trail: Vec::new() 
+        }
+    }
+
+    pub fn push(&mut self, value_cell: ValueCell) {
+        self.trail.push(value_cell);
+    }
+
+    pub fn len(&self) -> usize {
+        self.trail.len()
+    }
+
+    pub fn rollback_until(&mut self, until: usize) {
+        while self.trail.len() > until {
+            if let Some(change) = self.trail.pop() {
+                debugln!("Reverting {:?}", change);
+                change.put(Value::Nil);
+            }
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.rollback_until(0);
+    }
+    
 }

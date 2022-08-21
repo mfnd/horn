@@ -1,6 +1,6 @@
 use std::{ops::Add, collections::{HashSet, HashMap}, hash::Hash, mem, rc::Rc};
 
-use crate::{parser::{CFGNode, Structure, Term, ListExpr, OperatorType, PrecedenceMap, DEFAULT_PRECEDENCES}, vm::{Instruction, Value, RuleInfo, ArithComparisonOp}};
+use crate::{parser::{CFGNode, Structure, Term, ListExpr, OperatorType, PrecedenceMap, DEFAULT_PRECEDENCES}, vm::{Instruction, Value, RuleInfo, ArithComparisonOp, Struct, ValueCell, List}};
 
 
 #[derive(Debug)]
@@ -8,7 +8,9 @@ pub struct PredicateDef {
     pub functor: usize,
     pub arity: usize,
     pub code: Vec<Instruction>,
-    pub variables: Vec<String>
+    pub variables: Vec<String>,
+    pub head: Value,
+    pub body: Vec<Value>
 }
 
 #[derive(Debug)]
@@ -16,7 +18,7 @@ pub struct QueryDef {
     pub variables: Vec<String>,
     pub atoms: Vec<String>,
     pub atoms_by_symbol: HashMap<String, usize>,
-    pub code: Vec<Instruction>
+    pub code: Vec<Instruction>,
 }
 
 #[derive(Debug)]
@@ -88,7 +90,7 @@ impl IRGen {
     }
 
     fn generate_fact(&mut self, fact: Structure) -> PredicateDef {
-        let functor = self.get_or_create_atom(fact.functor);
+        let functor = self.get_or_create_atom(&fact.functor);
         let arity = fact.params.len();
 
         for (idx, param) in fact.params.iter().enumerate() {
@@ -141,12 +143,14 @@ impl IRGen {
             functor, 
             arity,
             code: mem::replace(&mut self.code, Vec::new()), 
-            variables: mem::replace(&mut self.variables, Vec::new())
+            variables: mem::replace(&mut self.variables, Vec::new()),
+            head: self.convert_to_meta_value(Term::Structure(fact)),
+            body: Vec::new()
         }
     }
 
     fn generate_rule(&mut self, head: Structure, body: Vec<Term>) -> PredicateDef {
-        let functor = self.get_or_create_atom(head.functor);
+        let functor = self.get_or_create_atom(&head.functor);
         let arity = head.params.len();
 
         for (idx, param) in head.params.iter().enumerate() {
@@ -192,7 +196,7 @@ impl IRGen {
             }
         }
 
-        for body_term in body {
+        for body_term in body.clone() {
             match body_term {
                 Term::Structure(s) => {
                     self.create_body(s)
@@ -215,7 +219,9 @@ impl IRGen {
             functor, 
             arity,
             code: mem::replace(&mut self.code, Vec::new()), 
-            variables: mem::replace(&mut self.variables, Vec::new())
+            variables: mem::replace(&mut self.variables, Vec::new()),
+            head: self.convert_to_meta_value(Term::Structure(head)),
+            body: body.into_iter().map(|term| self.convert_to_meta_value(term)).collect()
         }
     }
 
@@ -253,7 +259,7 @@ impl IRGen {
     }
 
     pub fn create_body(&mut self, s: Structure) {
-        let functor = self.get_or_create_atom(s.functor);
+        let functor = self.get_or_create_atom(&s.functor);
         let arity = s.params.len();
 
         for (idx, param) in s.params.into_iter().enumerate() {
@@ -295,7 +301,7 @@ impl IRGen {
     }
 
     pub fn create_structure(&mut self, s: &Structure) {
-        let functor = self.get_or_create_atom(s.functor.clone());
+        let functor = self.get_or_create_atom(&s.functor);
         let arity = s.params.len() as u32;
 
         for param in &s.params {
@@ -355,13 +361,13 @@ impl IRGen {
         });
     }
 
-    pub fn get_or_create_atom(&mut self, val: String) -> usize {
+    pub fn get_or_create_atom(&mut self, val: &str) -> usize {
         let next_idx = self.curr_module.atoms.len();
-        match self.curr_module.atoms_by_symbol.get(&val) {
+        match self.curr_module.atoms_by_symbol.get(val) {
             Some(atom) => *atom,
             None => {
-                self.curr_module.atoms.push(val.clone());
-                self.curr_module.atoms_by_symbol.insert(val, next_idx);
+                self.curr_module.atoms.push(String::from(val));
+                self.curr_module.atoms_by_symbol.insert(String::from(val), next_idx);
                 next_idx
             }
         }
@@ -374,6 +380,38 @@ impl IRGen {
             let var_idx = self.variables.len();
             self.variables.push(String::from(val));
             var_idx as u32
+        }
+    }
+
+    fn convert_to_meta_value(&mut self, term: Term) -> Value {
+        match term {
+            Term::Number(num) => Value::Int(num),
+            Term::Atom(atom) => Value::Atom(self.get_or_create_atom(&atom)),
+            Term::String(string) => Value::Str(Rc::from(string.as_ref())),
+            Term::Variable(variable) => Value::Ref(ValueCell::new()),
+            Term::Structure(structure) => {
+                let functor = self.get_or_create_atom(&structure.functor);
+                let params: Vec<Value> = structure.params
+                    .into_iter()
+                    .map(|p| self.convert_to_meta_value(p))
+                    .collect(); 
+                Value::create_struct(functor, params)
+            }
+            Term::List(list) => {
+                let converted_tail = list.tail.map_or(Value::List(List::Nil), |lst| self.convert_to_meta_value(*lst));
+                println!("{:?}", converted_tail);
+                let mut curr = match converted_tail {
+                    Value::List(tail) => tail,
+                    Value::Ref(value_cell) => List::Ref(value_cell),
+                    _ => unreachable!()
+                };
+                
+                for el in list.heads.into_iter().rev() {
+                    let value = self.convert_to_meta_value(el);
+                    curr = List::cons(value, curr);
+                }
+                Value::List(curr)
+            }
         }
     }
 
