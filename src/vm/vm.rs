@@ -11,7 +11,7 @@ use crate::parser::{CFGNode, PrologParser};
 use crate::vm::{List, Instruction, Struct};
 
 use super::error::{RuntimeError, RuntimeErrorType};
-use super::{ValueCell, CodeBlock, Rule, NativePredicate, PRELUDE_ATOMS, PreludeAtoms, ArithComparisonOp, unify, Trail};
+use super::{ValueCell, CodeBlock, Rule, NativePredicate, PRELUDE_ATOMS, PreludeAtoms, ArithComparisonOp, unify, Trail, Namespace};
 use super::value::Value;
 
 struct CallFrame {
@@ -59,10 +59,7 @@ pub type RuntimeResult<T> = Result<T, Box<RuntimeError>>;
 pub type QueryResult = RuntimeResult<Vec<Value>>;
 
 pub struct PrologVM {
-    rules: HashMap<(usize, u32), Rc<Rule>>,
-    native_predicates: HashMap<(usize, u32), Rc<NativePredicate>>,
-    atoms: HashMap<String, usize>,
-    atoms_by_id: Vec<String>,
+    namespace: Namespace,
     registers: Vec<Value>,
     value_stack: Vec<Value>,
     call_stack: Vec<CallFrame>,
@@ -78,33 +75,19 @@ pub struct PrologVM {
 impl PrologVM {
 
     pub fn new() -> Self {
-        let mut atoms = HashMap::new();
-        let mut atoms_by_id = Vec::new();
+        let mut namespace = Namespace::new();
         for (op, ident) in PRELUDE_ATOMS {
-            assert!(*op as usize == atoms_by_id.len());
-            atoms_by_id.push(String::from(*ident));
-            atoms.insert(String::from(*ident), *op as usize);
+            assert!(*op as usize == namespace.atom_count());
+            namespace.get_or_create_atom(ident);
         }
 
-        let mut native_predicates = HashMap::new();
         BUILTINS.iter().for_each(|(name, builtin)| {
-            let idx = atoms_by_id.len();
-            atoms_by_id.push(String::from(name.0));
-            atoms.insert(String::from(name.0), idx);
-            native_predicates.insert((idx, name.1), Rc::from(
-                NativePredicate {
-                    functor: String::from(name.0),
-                    arity: name.1,               
-                    function_ptr: *builtin
-                }
-            ));
+            let idx = namespace.get_or_create_atom(name.0);
+            namespace.create_native(idx, name.1, *builtin);
         });
 
         PrologVM { 
-            rules: HashMap::new(),
-            native_predicates: native_predicates,
-            atoms: atoms,
-            atoms_by_id: atoms_by_id,
+            namespace,
             registers: vec![Value::Nil; 16],
             value_stack: Vec::new(),
             call_stack: Vec::new(),
@@ -146,8 +129,8 @@ impl PrologVM {
         self.choice_stack.clear();
         self.curr_frame = 0;
 
-        let atom_mapping: Vec<usize> = query.atoms.iter().map(|s| self.get_or_create_atom(s)).collect();
-        self.link_code(&mut query.code, &atom_mapping);
+        let atom_mapping: Vec<usize> = query.namespace.atoms.iter().map(|s| self.get_or_create_atom(s)).collect();
+        self.namespace.link_code(&mut query.code, &atom_mapping);
 
         self.pc = 0;
         self.code = Some(CodeBlock::from(query));
@@ -325,7 +308,7 @@ impl PrologVM {
                     let rule = rule.clone();
                     let alternates = rule.code.borrow();
                     if alternates.len() == 0 {
-                        panic!("Predicate not defined: {}/{}", self.atoms_by_id[rule.functor], rule.arity);
+                        panic!("Predicate not defined: {}/{}", self.namespace.get_atom_symbol(rule.functor).unwrap_or("UNKNOWN"), rule.arity);
                     } else if alternates.len() > 1 {
                         let arg_count = rule.arity as usize;
                         let mut args = Vec::with_capacity(arg_count);
@@ -359,7 +342,7 @@ impl PrologVM {
                                 Rc::from(
                                     Struct {
                                         functor: *functor,
-                                        terms: params,
+                                        params,
                                     }
                                 )
                             )
@@ -440,138 +423,25 @@ impl PrologVM {
     }
 
     pub fn load_module(&mut self, module: Module) {
-        debugln!("{:#?}", module);
-        let atom_mapping: Vec<usize> = module.atoms.iter().map(|s| self.get_or_create_atom(s)).collect();
-        for mut pred in module.predicates {
-            let mapped_functor = atom_mapping[pred.functor];
-            let rule_name = (mapped_functor, pred.arity as u32);
-
-            //self.link_code(&mut pred.code, &atom_mapping);
-            self.link_predicate(&mut pred, &atom_mapping);
-
-            match self.rules.entry(rule_name) {
-                Entry::Occupied(e) => {
-                    let mut alternates = e.get().code.borrow_mut();
-                    alternates.push(CodeBlock::from(pred))
-                }
-                Entry::Vacant(e) => {
-                    let rule = Rc::from(
-                        Rule {
-                            functor: pred.functor,
-                            arity: pred.arity as u32,
-                            code: RefCell::from(vec![CodeBlock::from(pred)]),
-                        }
-                    );
-                    e.insert(rule);
-                }
-            }
-        }
-    }
-
-    pub fn link_predicate(&mut self, pred: &mut PredicateDef, atom_mapping: &[usize]) {
-        self.link_code(&mut pred.code, atom_mapping);
-        pred.head = self.link_value(&mut pred.head, atom_mapping);
-        pred.body = pred.body.iter().map(|v| self.link_value(v, atom_mapping)).collect();
-    }
-
-    pub fn link_code(&mut self, code: &mut [Instruction], atom_mapping: &[usize]) {
-        for inst in code.iter_mut() {
-            match inst {
-                Instruction::NamedCall(functor, arity) => {
-                    let f = atom_mapping[*functor];
-                    let a = *arity;
-                    if let Some(native_pred) = self.get_native(f, a) {
-                        *inst = Instruction::NativeCall(native_pred);
-                    } else {
-                        *inst = Instruction::Call(self.get_or_create_predicate(f, a));
-                    }
-                }
-                Instruction::CreateStructure(functor, _) => {
-                    *functor = atom_mapping[*functor];
-                    
-                }
-                _ => ()
-            }
-        }
-    }
-
-    pub fn link_value(&mut self, value: &Value, atom_mapping: &[usize]) -> Value {
-        match value {
-            Value::Atom(atom) => {
-                let mapped_atom = atom_mapping[*atom];
-                Value::Atom(mapped_atom)
-            }
-            Value::Struct(structure) => {
-                let mapped_functor = atom_mapping[structure.functor];
-                let params: Vec<Value> = structure.terms
-                    .iter()
-                    .map(|v| self.link_value(v, atom_mapping))
-                    .collect();
-                Value::Struct(Rc::from(Struct {
-                    functor: mapped_functor,
-                    terms: params
-                }))
-            }
-            Value::List(list) => Value::List(self.link_list_value(list, atom_mapping)),
-            _ => value.clone()
-        }
-    }
-
-    fn link_list_value(&mut self, list: &List, atom_mapping: &[usize]) -> List {
-        match list {
-            List::Nil => List::Nil,
-            List::Cons(node) => {
-                List::cons(
-                    self.link_value(&node.head, atom_mapping), 
-                    self.link_list_value(&node.tail, atom_mapping)
-                )
-            }
-            List::Ref(value_cell) => List::Ref(value_cell.clone())
-        }
+        self.namespace.load_module(module)
     }
 
     pub fn get_or_create_atom(&mut self, symbol: &str) -> usize {
-        let next_idx = self.atoms_by_id.len();
-        match self.atoms.entry(symbol.to_string()) {
-            Entry::Occupied(entry) => *entry.get(),
-            Entry::Vacant(entry) => {
-                entry.insert(next_idx);
-                self.atoms_by_id.push(symbol.to_string());
-                next_idx
-            }
-        }
-    }
-
-    pub fn get_native(&mut self, functor: usize, arity: u32) -> Option<Rc<NativePredicate>> {
-        self.native_predicates.get(&(functor, arity)).cloned()
-    }
-
-    pub fn get_or_create_predicate(&mut self, functor: usize, arity: u32) -> Rc<Rule> {
-        let name = (functor, arity);
-        self.rules.entry(name).or_insert_with(|| 
-            Rc::from(
-                Rule {
-                    functor,
-                    arity,
-                    code: RefCell::from(vec![]),
-                }
-            )
-        ).clone()
+        self.namespace.get_or_create_atom(symbol)
     }
 
     pub fn get_predicate(&mut self, functor: usize, arity: u32) -> Option<Rc<Rule>> {
-        let name = (functor, arity);
-        self.rules.get(&name).cloned()
+        self.namespace.get_predicate(functor, arity)
     }
 
     pub fn eval_arithmetic(&self, expr: &Value) -> RuntimeResult<Value> {
         let result = match expr {
             Value::Int(i) => Value::Int(*i),
             Value::Struct(s) => {
-                let arity = s.terms.len();
+                let arity = s.params.len();
                 if arity == 2 {
-                    let arg1 = self.eval_arithmetic(&s.terms[0])?;
-                    let arg2 = self.eval_arithmetic(&s.terms[1])?;
+                    let arg1 = self.eval_arithmetic(&s.params[0])?;
+                    let arg2 = self.eval_arithmetic(&s.params[1])?;
                     match (arg1, arg2) {
                         (Value::Int(v1), Value::Int(v2)) => {
                             match s.functor {
@@ -585,7 +455,7 @@ impl PrologVM {
                                         error_type: RuntimeErrorType::ArithmeticError,
                                         cause: None,
                                         message: format!(
-                                            "Unsupported arithmetic operation {:?}", self.atoms_by_id[s.functor]
+                                            "Unsupported arithmetic operation {:?}", self.namespace.get_atom_symbol(s.functor).unwrap()
                                         ),
                                     }
                                 ))
@@ -597,7 +467,7 @@ impl PrologVM {
                                     error_type: RuntimeErrorType::ValueError,
                                     cause: None,
                                     message: format!(
-                                        "Invalid operands {:?} and {:?} for {:?}", a1.type_str(), a2.type_str(), self.atoms_by_id[s.functor]
+                                        "Invalid operands {:?} and {:?} for {:?}", a1.type_str(), a2.type_str(), self.namespace.get_atom_symbol(s.functor).unwrap()
                                     ),
                                 }
                             ))
@@ -609,7 +479,7 @@ impl PrologVM {
                             error_type: RuntimeErrorType::ArithmeticError,
                             cause: None,
                             message: format!(
-                                "Invalid arithmetic function {}/{}", self.atoms_by_id[s.functor], arity
+                                "Invalid arithmetic function {}/{}", self.namespace.get_atom_symbol(s.functor).unwrap(), arity
                             ),
                         }
                     ))

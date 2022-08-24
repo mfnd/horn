@@ -1,6 +1,6 @@
 use std::{ops::Add, collections::{HashSet, HashMap}, hash::Hash, mem, rc::Rc};
 
-use crate::{parser::{CFGNode, Structure, Term, ListExpr, OperatorType, PrecedenceMap, DEFAULT_PRECEDENCES}, vm::{Instruction, Value, RuleInfo, ArithComparisonOp, Struct, ValueCell, List}};
+use crate::{parser::{CFGNode, Structure, Term, ListExpr, OperatorType, PrecedenceMap, DEFAULT_PRECEDENCES}, vm::{Instruction, Value, RuleInfo, ArithComparisonOp, Struct, ValueCell, List, Namespace, ValueCellContent}};
 
 
 #[derive(Debug)]
@@ -16,15 +16,13 @@ pub struct PredicateDef {
 #[derive(Debug)]
 pub struct QueryDef {
     pub variables: Vec<String>,
-    pub atoms: Vec<String>,
-    pub atoms_by_symbol: HashMap<String, usize>,
+    pub namespace: Namespace,
     pub code: Vec<Instruction>,
 }
 
 #[derive(Debug)]
 pub struct Module {
-    pub atoms: Vec<String>,
-    pub atoms_by_symbol: HashMap<String, usize>,
+    pub namespace: Namespace,
     pub predicates: Vec<PredicateDef>
 }
 
@@ -32,8 +30,7 @@ impl Module {
 
     fn new() -> Self {
         Module {
-            atoms: Vec::new(),
-            atoms_by_symbol: HashMap::new(),
+            namespace: Namespace::new(),
             predicates: Vec::new()
         }
     }
@@ -149,6 +146,7 @@ impl IRGen {
         }
     }
 
+
     fn generate_rule(&mut self, head: Structure, body: Vec<Term>) -> PredicateDef {
         let functor = self.get_or_create_atom(&head.functor);
         let arity = head.params.len();
@@ -253,8 +251,7 @@ impl IRGen {
         QueryDef { 
             variables: mem::replace(&mut self.variables, Vec::new()), 
             code: mem::replace(&mut self.code, Vec::new()),
-            atoms: query_module.atoms,
-            atoms_by_symbol: query_module.atoms_by_symbol 
+            namespace: query_module.namespace,
         }
     }
 
@@ -340,7 +337,7 @@ impl IRGen {
     }
 
     pub fn handle_functor(&mut self, functor: usize, arity: u32) -> bool {
-        let functor_str = self.curr_module.atoms[functor].as_str();
+        let functor_str = self.curr_module.namespace.get_atom_symbol(functor).expect("Invalid functor id");
         match (functor_str, arity) {
             ("=:=", 2) => self.create_comparison_op(ArithComparisonOp::Eq),
             ("=/=", 2) => self.create_comparison_op(ArithComparisonOp::Neq),
@@ -362,15 +359,7 @@ impl IRGen {
     }
 
     pub fn get_or_create_atom(&mut self, val: &str) -> usize {
-        let next_idx = self.curr_module.atoms.len();
-        match self.curr_module.atoms_by_symbol.get(val) {
-            Some(atom) => *atom,
-            None => {
-                self.curr_module.atoms.push(String::from(val));
-                self.curr_module.atoms_by_symbol.insert(String::from(val), next_idx);
-                next_idx
-            }
-        }
+        self.curr_module.namespace.get_or_create_atom(val)
     }
 
     pub fn get_or_create_variable(&mut self, val: &str) -> u32 {
@@ -415,4 +404,4 @@ impl IRGen {
         }
     }
 
-} 
+}

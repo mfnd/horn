@@ -12,9 +12,9 @@ pub fn unify_ref(val1: &Value, val2: &Value, trail: &mut Trail) -> bool {
         (Value::Struct(struct1), Value::Struct(struct2)) => {
             if Rc::ptr_eq(&struct1, &struct2) {
                 true
-            } else if (*struct1).functor == (*struct2).functor && (*struct1).terms.len() == (*struct2).terms.len() {
+            } else if (*struct1).functor == (*struct2).functor && (*struct1).params.len() == (*struct2).params.len() {
                 let mut res = true;
-                for (term1, term2) in (*struct1).terms.iter().zip((*struct2).terms.iter()) {
+                for (term1, term2) in (*struct1).params.iter().zip((*struct2).params.iter()) {
                     if !unify(term1.clone(), term2.clone(), trail) {
                         res = false;
                         break;
@@ -71,9 +71,9 @@ pub fn unify(val1: Value, val2: Value, trail: &mut Trail) -> bool {
         (Value::Struct(struct1), Value::Struct(struct2)) => {
             if Rc::ptr_eq(&struct1, &struct2) {
                 true
-            } else if (*struct1).functor == (*struct2).functor && (*struct1).terms.len() == (*struct2).terms.len() {
+            } else if (*struct1).functor == (*struct2).functor && (*struct1).params.len() == (*struct2).params.len() {
                 let mut res = true;
-                for (term1, term2) in (*struct1).terms.iter().zip((*struct2).terms.iter()) {
+                for (term1, term2) in (*struct1).params.iter().zip((*struct2).params.iter()) {
                     if !unify(term1.clone(), term2.clone(), trail) {
                         res = false;
                         break;

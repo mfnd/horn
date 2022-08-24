@@ -30,7 +30,6 @@ pub fn is(vm: &mut PrologVM) -> RuntimeResult<bool> {
     Ok(vm.unify(value, result))
 }
 
-
 #[derive(PartialEq)]
 enum RetractBehavior {
     First,
@@ -40,7 +39,7 @@ enum RetractBehavior {
 fn retract_with_behavior(vm: &mut PrologVM, behavior: RetractBehavior) -> RuntimeResult<bool> {
     let predicate_struct = vm.read_register(0);
     let (functor, arity) = match &predicate_struct {
-        Value::Struct(s) => (s.functor, s.terms.len() as u32),
+        Value::Struct(s) => (s.functor, s.params.len() as u32),
         _ => todo!()
     };
 

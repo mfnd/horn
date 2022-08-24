@@ -21,7 +21,7 @@ impl Value {
             Rc::from(
                 Struct {
                     functor,
-                    terms
+                    params: terms
                 }
             )
         )
@@ -34,7 +34,7 @@ impl Value {
                     Rc::from(
                         Struct {
                             functor: s.functor,
-                            terms: s.terms.iter().map(|v| v.deep_copy()).collect(),
+                            params: s.params.iter().map(|v| v.deep_copy()).collect(),
                         }
                     )
                 )
@@ -176,12 +176,17 @@ pub struct Node {
 #[derive(Debug, PartialEq)]
 pub struct Struct {
     pub functor: usize,
-    pub terms: Vec<Value>
+    pub params: Vec<Value>
 }
 
 #[derive(Clone)]
 pub struct ValueCell {
     value_ref: Rc<RefCell<Value>>
+}
+
+pub enum ValueCellContent {
+    Bound(Value),
+    Unbound(usize)
 }
 
 impl ValueCell {
@@ -196,6 +201,15 @@ impl ValueCell {
             Value::Ref(value_cell) => value_cell.get_value_deref(),
             _ => value
         }
+    }
+
+    pub fn get_content(&self) -> ValueCellContent {
+        let value = self.value_ref.as_ref().borrow().clone();
+        match value {
+            Value::Ref(value_cell) => value_cell.get_content(),
+            Value::Nil => ValueCellContent::Unbound(self.value_ref.as_ptr() as usize),
+            _ => ValueCellContent::Bound(value)
+        } 
     }
 
     pub fn put_ref(&self, other: ValueCell) {
