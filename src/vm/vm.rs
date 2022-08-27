@@ -426,6 +426,10 @@ impl PrologVM {
         self.namespace.load_module(module)
     }
 
+    pub fn load_predicate(&mut self, predicate: PredicateDef) {
+        self.namespace.load_predicate(predicate)
+    }
+
     pub fn get_or_create_atom(&mut self, symbol: &str) -> usize {
         self.namespace.get_or_create_atom(symbol)
     }

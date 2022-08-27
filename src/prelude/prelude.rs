@@ -30,6 +30,21 @@ pub fn is(vm: &mut PrologVM) -> RuntimeResult<bool> {
     Ok(vm.unify(value, result))
 }
 
+fn assertz(vm: &mut PrologVM) -> RuntimeResult<bool> {
+    let predicate_struct = vm.read_register(0);
+    let (functor, arity) = match &predicate_struct {
+        Value::Struct(s) => (s.functor, s.params.len() as u32),
+        _ => todo!()
+    };
+
+    let mut ir_gen = IRGen::new();
+    let predicate_def = ir_gen.generate_fact_from_value(predicate_struct);
+    vm.load_predicate(predicate_def);
+
+    Ok(true)
+}
+
+
 #[derive(PartialEq)]
 enum RetractBehavior {
     First,
@@ -76,6 +91,7 @@ lazy_static! {
         builtins.insert(("is", 2), is);
         builtins.insert(("retractall", 1), retractall);
         builtins.insert(("retract", 1), retract);
+        builtins.insert(("assertz", 1), assertz);
         builtins
     };
 }

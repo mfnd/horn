@@ -49,32 +49,33 @@ impl Namespace {
         debugln!("{:#?}", module);
         let atom_mapping: Vec<usize> = module.namespace.atoms.iter().map(|s| self.get_or_create_atom(s)).collect();
         for mut pred in module.predicates {
-            let mapped_functor = atom_mapping[pred.functor];
-            let rule_name = (mapped_functor, pred.arity as u32);
-
-            //self.link_code(&mut pred.code, &atom_mapping);
             self.link_predicate(&mut pred, &atom_mapping);
+            self.load_predicate(pred);
+        }
+    }
 
-            match self.predicates.entry(rule_name) {
-                Entry::Occupied(e) => {
-                    let mut alternates = e.get().code.borrow_mut();
-                    alternates.push(CodeBlock::from(pred))
-                }
-                Entry::Vacant(e) => {
-                    let rule = Rc::from(
-                        Rule {
-                            functor: pred.functor,
-                            arity: pred.arity as u32,
-                            code: RefCell::from(vec![CodeBlock::from(pred)]),
-                        }
-                    );
-                    e.insert(rule);
-                }
+    pub fn load_predicate(&mut self, predicate: PredicateDef) {
+        let rule_name = (predicate.functor, predicate.arity as u32);
+        match self.predicates.entry(rule_name) {
+            Entry::Occupied(e) => {
+                let mut alternates = e.get().code.borrow_mut();
+                alternates.push(CodeBlock::from(predicate))
+            }
+            Entry::Vacant(e) => {
+                let rule = Rc::from(
+                    Rule {
+                        functor: predicate.functor,
+                        arity: predicate.arity as u32,
+                        code: RefCell::from(vec![CodeBlock::from(predicate)]),
+                    }
+                );
+                e.insert(rule);
             }
         }
     }
 
     pub fn link_predicate(&mut self, pred: &mut PredicateDef, atom_mapping: &[usize]) {
+        pred.functor = atom_mapping[pred.functor];
         self.link_code(&mut pred.code, atom_mapping);
         pred.head = self.link_value(&mut pred.head, atom_mapping);
         pred.body = pred.body.iter().map(|v| self.link_value(v, atom_mapping)).collect();

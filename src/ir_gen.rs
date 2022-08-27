@@ -404,4 +404,65 @@ impl IRGen {
         }
     }
 
+
+    pub fn generate_fact_from_value(&mut self, head: Value) -> PredicateDef {
+        if let Value::Struct(structure) = head.clone() {
+            for (idx, param) in structure.params.iter().enumerate() {
+                match param {
+                    Value::Ref(value_cell) => {
+                        match value_cell.get_content() {
+                            ValueCellContent::Bound(val) => self.code.push(
+                                Instruction::UnifyRegisterConstant {
+                                    register: idx as u32, 
+                                    constant: val
+                                }
+                            ),
+                            ValueCellContent::Unbound(id) => {
+                                let variable = format!("_V{}", id);
+                                if let Some(var_idx) = self.variables.iter().position(|v| v == &variable) {
+                                    self.code.push(
+                                        Instruction::UnifyVariableRegister {
+                                            variable: var_idx as u32,
+                                            register: idx as u32
+                                        }
+                                    )
+                                } else {
+                                    let var_idx = self.variables.len();
+                                    self.variables.push(variable);
+                                    self.code.push(
+                                        Instruction::LoadRegister{
+                                            register: idx as u32, 
+                                            variable: var_idx as u32
+                                        }
+                                    )
+                                }
+                            }
+                        }
+                    },
+                    Value::Struct(_) => todo!(),
+                    Value::List(_) => todo!(),
+                    _ => self.code.push(
+                        Instruction::UnifyRegisterConstant {
+                            register: idx as u32, 
+                            constant: param.clone()
+                        }
+                    )
+                }
+            }        
+
+            self.code.insert(0, Instruction::Allocate(self.variables.len() as u32));
+            self.code.push(Instruction::Return);
+            
+            PredicateDef { 
+                functor: structure.functor,
+                arity: structure.params.len(),
+                code: mem::replace(&mut self.code, Vec::new()), 
+                variables: mem::replace(&mut self.variables, Vec::new()),
+                head: head,
+                body: Vec::new()
+            }
+        } else {
+            todo!()
+        }
+    }
 }

@@ -172,4 +172,46 @@ run_collect_assert! {
             &[Value::Int(2), Value::Int(6)]
         ]
     ),
+
+    assertz_test_1: (
+        r#"
+        fact(1, 3).
+
+        assertz_test(X, Y) :- assertz(fact(2, 4)), fact(X, Y).
+
+        "#,
+        "assertz_test(X, Y).",
+        &[
+            &[Value::Int(1), Value::Int(3)],
+            &[Value::Int(2), Value::Int(4)]
+        ]
+    ),
+
+    assertz_test_2: (
+        r#"
+        fact(1, 3).
+
+        assertz_test(Added, X, Y) :- assertz(fact(2, Added)), fact(X, Y).
+
+        "#,
+        "assertz_test(6, X, Y).",
+        &[
+            &[Value::Int(1), Value::Int(3)],
+            &[Value::Int(2), Value::Int(6)]
+        ]
+    ),
+
+    assertz_test_3: (
+        r#"
+        fact(1, 3).
+
+        assertz_test(X, Y) :- assertz(fact(Z, Z)), fact(X, Y).
+
+        "#,
+        "assertz_test(1, Y).",
+        &[
+            &[Value::Int(3)],
+            &[Value::Int(1)]
+        ]
+    ),
 }
